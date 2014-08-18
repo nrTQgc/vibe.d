@@ -19,7 +19,7 @@
 	"targetType": "library",
 	"mainSourceFile": "source/vibe/appmain.d",
 	"buildRequirements": ["requireBoundsCheck"],
-
+        "stringImportPaths": ["source"],
 	"copyFiles-windows-x86": ["lib/win-i386/libeay32.dll", "lib/win-i386/ssleay32.dll"],
 	"sourceFiles-windows-x86" : ["lib/win-i386/eay.lib", "lib/win-i386/ssl.lib"],
 	"copyFiles-windows-x86_64": ["lib/win-amd64/libeay32.dll", "lib/win-amd64/ssleay32.dll"],
@@ -37,6 +37,12 @@
 			"libs-windows": ["wsock32", "ws2_32", "advapi32"],
 		},
 		{
+			"name": "libevent-pfq",
+			"dependencies": {"libevent": "~master"},
+			"versions": ["VibeLibeventDriver", "PFQDriver"],
+                        "platforms": ["posix"],
+		},
+	        {
 			"name": "libev",
 			"dependencies": {"libev": "~master"},
 			"platforms": ["posix"],
