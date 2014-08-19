@@ -15,7 +15,39 @@ version(VibeLibeventDriver) version(PFQDriver)
 	import deimos.event2.event;
 	import deimos.event2.thread;
 	import deimos.event2.util;
+	import vibe.internal.pfq;
+	import vibe.core.drivers.utils;
 
+	bool pfq_active = false;
+
+	pfq_t *p;
+	pfq_iterator_t it, it_e;
+	pfq_net_queue nq;
+	NetworkAddress[] sockets;
+
+	//--------------------
+	//
+	enum dev = "eth0";
+	enum udp_tx_batch_size = 10;
+	//--------------------
+
+	static this(){
+		p = pfq_open(64, 4096);
+
+		if (p == null) {
+			debug writefln("error: %s", pfq_error(p));
+		} else if (pfq_enable(p) < 0) {
+			debug writefln ("error: %s", pfq_error(p));
+		} else if (pfq_bind(p, dev.ptr, Q_ANY_QUEUE) < 0) {
+			debug writefln("error: %s", pfq_error(p));
+		} else if (pfq_timestamp_enable(p, 1) < 0) {
+			debug writefln("error: %s", pfq_error(p));
+		} else{
+			pfq_active = true;
+
+			debug writefln("reading from %s...", dev);
+		}
+	}
 
 	class PFQDriver : Libevent2Driver {
 		this(DriverCore core)
@@ -25,12 +57,15 @@ version(VibeLibeventDriver) version(PFQDriver)
 		}
 
 		override UDPConnection listenUDP(ushort port, string bind_address = "0.0.0.0"){
-			debug writeln("PFQDriver - listenUDP");
-			return super.listenUDP(port, bind_address);
+			debug writefln("PFQDriver - listenUDP, PFQ: %s", pfq_active);
+			return pfq_active ? new PFQUDPConnection(port, bind_address) : super.listenUDP(port, bind_address);
 		}
 
 	}
 
+	bool cmpNetworkAddress(NetworkAddress a, NetworkAddress b){
+		return a.toAddressString>b.toAddressString;
+	}
 
 	/**
 	Represents a bound and possibly 'connected' UDP socket.
@@ -40,9 +75,17 @@ version(VibeLibeventDriver) version(PFQDriver)
 			NetworkAddress m_bindAddress;
 			string m_bindAddressString;
 			bool m_canBroadcast = false;
+
 		}
 
 		this(NetworkAddress bind_addr){
+			import std.range;
+			//todo what about situation: 0.0.0.0:port & 192.168.1.1:port
+			auto tmpSockets = sockets.assumeSorted!cmpNetworkAddress;
+			socketEnforce(tmpSockets.contains!cmpNetworkAddress(bind_addr), "Error enabling socket address reuse on listening socket");
+			sockets ~= bind_addr;
+			sockets.sort!(a.toAddressString>b.toAddressString);
+
 			m_bindAddress = bind_addr;
 			char buf[64];
 			void* ptr;
@@ -78,7 +121,9 @@ version(VibeLibeventDriver) version(PFQDriver)
 		Otherwise communication with any reachable peer is possible.
 	    */
 		void connect(string host, ushort port){
-			//todo
+			NetworkAddress addr = m_driver.resolveHost(host, m_ctx.local_addr.family);
+			addr.port = port;
+			connect(addr);
 		}
 		/// ditto
 		void connect(NetworkAddress address){
@@ -91,7 +136,9 @@ version(VibeLibeventDriver) version(PFQDriver)
 		will be sent to the address specified by a call to connect().
 	    */
 		void send(in ubyte[] data, in NetworkAddress* peer_address = null){
-			//todo
+			ubyte[] pck = [];//todo
+			auto rs = pfq_send_async(p, pck.ptr, pck.length, udp_tx_batch_size);
+			debug writefln("pfq_send_async: %s", rs);
 		}
 		
 		/** Receives a single packet.

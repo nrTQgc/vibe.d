@@ -1,6 +1,6 @@
 ﻿module vibe.internal.pfq;
 
-import vibe.internal.pf_q;
+public import vibe.internal.pf_q;
 
 extern (C):
 

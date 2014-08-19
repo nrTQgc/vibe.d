@@ -193,3 +193,101 @@ struct sock_fprog { /* Required for SO_ATTACH_FILTER. */
 };
 
 
+
+/*
+   +------------------+----------------------+          +----------------------+          +----------------------+
+   | pfq_queue_hdr    | pfq_pkt_hdr | packet | ...      | pfq_pkt_hdr | packet |...       | pfq_pkt_hdr | packet | ...
+   +------------------+----------------------+          +----------------------+          +----------------------+
+   +                             +                             +
+   | <------+ queue rx  +------> |  <----+ queue rx +------>   |  <----+ queue tx +------>
+   +                             +                             +
+   */
+
+
+/* PFQ socket options */
+
+enum Q_SO_TOGGLE_QUEUE               = 1;       /* enable = 1, disable = 0 */
+
+enum Q_SO_SET_RX_TSTAMP              = 2;
+enum Q_SO_SET_RX_CAPLEN              = 3;
+enum Q_SO_SET_RX_SLOTS               = 4;
+enum Q_SO_SET_RX_OFFSET              = 5;
+enum Q_SO_SET_TX_MAXLEN              = 6;
+enum Q_SO_SET_TX_SLOTS               = 7;
+
+enum Q_SO_GROUP_BIND                 = 8;
+enum Q_SO_GROUP_UNBIND               = 9;
+enum Q_SO_GROUP_JOIN                 = 10;
+enum Q_SO_GROUP_LEAVE                = 11;
+
+enum Q_SO_GROUP_FPROG                = 12;      /* Berkeley packet filter */
+enum Q_SO_GROUP_VLAN_FILT_TOGGLE     = 13;      /* enable/disable VLAN filters */
+enum Q_SO_GROUP_VLAN_FILT            = 14;      /* enable/disable VLAN ID filters */
+enum Q_SO_GROUP_FUNCTION             = 15;
+
+enum Q_SO_EGRESS_BIND                = 16;
+enum Q_SO_EGRESS_UNBIND              = 17;
+
+enum Q_SO_GET_ID                     = 20;
+enum Q_SO_GET_STATUS                 = 21;      /* 1 = enabled, 0 = disabled */
+enum Q_SO_GET_STATS                  = 22;
+enum Q_SO_GET_QUEUE_MEM              = 23;      /* size of the whole dbmp queue (bytes) */
+
+enum Q_SO_GET_RX_TSTAMP              = 24;
+enum Q_SO_GET_RX_CAPLEN              = 25;
+enum Q_SO_GET_RX_SLOTS               = 26;
+enum Q_SO_GET_RX_OFFSET              = 27;
+
+enum Q_SO_GET_TX_MAXLEN              = 28;
+enum Q_SO_GET_TX_SLOTS               = 29;
+
+enum Q_SO_GET_GROUPS                 = 30;
+enum Q_SO_GET_GROUP_STATS            = 31;
+enum Q_SO_GET_GROUP_COUNTERS         = 32;
+
+enum Q_SO_TX_THREAD_BIND             = 33;
+enum Q_SO_TX_THREAD_START            = 34;
+enum Q_SO_TX_THREAD_STOP             = 35;
+enum Q_SO_TX_THREAD_WAKEUP           = 36;
+enum Q_SO_TX_QUEUE_FLUSH             = 37;
+
+/* general placeholders */
+
+enum Q_ANY_DEVICE         = -1;
+enum Q_ANY_QUEUE          = -1;
+enum Q_ANY_GROUP          = -1;
+
+/* timestamp */
+
+enum Q_TSTAMP_OFF          = 0;       /* default */
+enum Q_TSTAMP_ON           = 1;
+
+/* vlan */
+
+enum Q_VLAN_PRIO_MASK     = 0xe000;
+enum Q_VLAN_VID_MASK      = 0x0fff;
+enum Q_VLAN_TAG_PRESENT   = 0x1000;
+
+enum Q_VLAN_UNTAG        = 0;
+enum Q_VLAN_ANYTAG       = -1;
+
+/* group policies */
+
+enum Q_POLICY_GROUP_UNDEFINED       = 0;
+enum Q_POLICY_GROUP_PRIVATE         = 1;
+enum Q_POLICY_GROUP_RESTRICTED      = 2;
+enum Q_POLICY_GROUP_SHARED          = 3;
+
+/* group class type */
+
+ulong Q_CLASS(uint n) pure nothrow{
+	return (1UL << (n));
+}
+enum Q_CLASS_MAX             = (ulong.sizeof<<3);
+
+enum Q_CLASS_DEFAULT         = Q_CLASS(0);
+enum Q_CLASS_USER_PLANE      = Q_CLASS(1);
+enum Q_CLASS_CONTROL_PLANE   = Q_CLASS(2);
+enum Q_CLASS_CONTROL         = Q_CLASS(Q_CLASS_MAX-1);                  /* reserved for management */
+//enum Q_CLASS_ANY             (((unsigned long)-1) ^ Q_CLASS_CONTROL); /* any class except management */
+
