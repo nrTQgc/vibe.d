@@ -41,6 +41,7 @@
 			"dependencies": {"libevent": "~master"},
 			"versions": ["VibeLibeventDriver", "PFQDriver"],
                         "platforms": ["posix"],
+                        "libs": ["pfq"]
 		},
 	        {
 			"name": "libev",

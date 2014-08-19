@@ -8,6 +8,13 @@ version(VibeLibeventDriver) version(PFQDriver)
 	debug import std.stdio;
 	import core.sys.posix.netinet.in_;
 	import core.sys.posix.netinet.tcp;
+	import core.time;
+	import std.conv;
+	import deimos.event2.bufferevent;
+	import deimos.event2.dns;
+	import deimos.event2.event;
+	import deimos.event2.thread;
+	import deimos.event2.util;
 
 
 	class PFQDriver : Libevent2Driver {
@@ -70,16 +77,22 @@ version(VibeLibeventDriver) version(PFQDriver)
 		Once connected, the UDPConnection can only communicate with the specified peer.
 		Otherwise communication with any reachable peer is possible.
 	    */
-		void connect(string host, ushort port);
+		void connect(string host, ushort port){
+			//todo
+		}
 		/// ditto
-		void connect(NetworkAddress address);
+		void connect(NetworkAddress address){
+			//todo
+		}
 		
 		/** Sends a single packet.
 
 		If peer_address is given, the packet is send to that address. Otherwise the packet
 		will be sent to the address specified by a call to connect().
 	    */
-		void send(in ubyte[] data, in NetworkAddress* peer_address = null);
+		void send(in ubyte[] data, in NetworkAddress* peer_address = null){
+			//todo
+		}
 		
 		/** Receives a single packet.
 
@@ -88,9 +101,17 @@ version(VibeLibeventDriver) version(PFQDriver)
 		The timeout overload will throw an Exception if no data arrives before the
 		specified duration has elapsed.
 	    */
-		ubyte[] recv(ubyte[] buf = null, NetworkAddress* peer_address = null);
+		ubyte[] recv(ubyte[] buf = null, NetworkAddress* peer_address = null){
+			//todo
+			return [];
+		}
+
 		/// ditto
-		ubyte[] recv(Duration timeout, ubyte[] buf = null, NetworkAddress* peer_address = null);
+		ubyte[] recv(Duration timeout, ubyte[] buf = null, NetworkAddress* peer_address = null){
+			//todo
+			return [];
+		}
+
 	}
 	
 
