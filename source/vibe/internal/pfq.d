@@ -67,11 +67,10 @@ int	pfq_iterator_ready(pfq_net_queue *nq, pfq_iterator_t iter)
 	return 1;
 }
 
-/*! Cause the calling thread to relinquish the CPU. */
+/+! Cause the calling thread to relinquish the CPU. */
 
 int	pfq_yield()
 {
-	import vibe.core.core;
 	yield();
 	return 0;
 	/*
@@ -82,7 +81,7 @@ int	pfq_yield()
 	sched_yield();
 #endif*/
 }
-
++/
 /*! pfq handler: function prototype. */
 alias void function(char *user, pfq_pkt_hdr *h, ubyte *data) pfq_handler_t;
 

@@ -17,8 +17,16 @@ version(VibeLibeventDriver) version(PFQDriver)
 	import deimos.event2.util;
 	import vibe.internal.pfq;
 	import vibe.core.drivers.utils;
+	import core.stdc.string;
+	import vibe.core.drivers.pfq.network;
+	import vibe.core.drivers.pfq.linux_net;
+import core.thread;
+import vibe.core.drivers.pfq.ip;
+import std.exception;
+
 
 	bool pfq_active = false;
+	IpNetwork ipNetwork;
 
 	pfq_t *p;
 	pfq_iterator_t it, it_e;
@@ -28,7 +36,7 @@ version(VibeLibeventDriver) version(PFQDriver)
 	//--------------------
 	//
 	enum dev = "eth0";
-	enum udp_tx_batch_size = 10;
+	enum udp_tx_batch_size = 1;
 	//--------------------
 
 	static this(){
@@ -47,12 +55,19 @@ version(VibeLibeventDriver) version(PFQDriver)
 
 			debug writefln("reading from %s...", dev);
 		}
+
+		NetworkConf conf = new LinuxNetworkConf();
+		ipNetwork = new DefaultIpNetwork(conf.getConfig());
 	}
 
 	class PFQDriver : Libevent2Driver {
+		private{
+			DriverCore core;
+		}
 		this(DriverCore core)
 		{
 			super(core);
+			this.core = core;
 			debug writeln("PFQDriver");
 		}
 
@@ -71,33 +86,31 @@ version(VibeLibeventDriver) version(PFQDriver)
 	Represents a bound and possibly 'connected' UDP socket.
     */
 	class PFQUDPConnection : UDPConnection {
-		private {
-			NetworkAddress m_bindAddress;
-			string m_bindAddressString;
-			bool m_canBroadcast = false;
 
+		private {
+			NetworkAddress bind_address;
+			NetworkAddress dest_address;
+
+			bool m_canBroadcast = false;
+			ubyte[] buffer = new ubyte[2048];
 		}
 
-		this(NetworkAddress bind_addr){
+
+		this(ushort port, string address = "0.0.0.0"){
+
 			import std.range;
 			//todo what about situation: 0.0.0.0:port & 192.168.1.1:port
+			bind_address = resolveHost(address, AF_INET, false);
+			bind_address.port = port;
 			auto tmpSockets = sockets.assumeSorted!cmpNetworkAddress;
-			socketEnforce(tmpSockets.contains!cmpNetworkAddress(bind_addr), "Error enabling socket address reuse on listening socket");
-			sockets ~= bind_addr;
-			sockets.sort!(a.toAddressString>b.toAddressString);
-
-			m_bindAddress = bind_addr;
-			char buf[64];
-			void* ptr;
-			if( bind_addr.family == AF_INET ) ptr = &bind_addr.sockAddrInet4.sin_addr;
-			else ptr = &bind_addr.sockAddrInet6.sin6_addr;
-			evutil_inet_ntop(bind_addr.family, ptr, buf.ptr, buf.length);
-			m_bindAddressString = to!string(buf.ptr);
+			socketEnforce(!tmpSockets.contains(bind_address), "Error enabling socket address reuse on listening socket");
+			sockets ~= bind_address;
+			sockets.sort!((a,b) => a.toAddressString>b.toAddressString);
 		}
 		/** Returns the address to which the UDP socket is bound.
 	    */
 		@property string bindAddress() const{
-			return m_bindAddressString;
+			return bind_address.toAddressString;
 		}
 		
 		/** Determines if the socket is allowed to send to broadcast addresses.
@@ -112,7 +125,7 @@ version(VibeLibeventDriver) version(PFQDriver)
 		
 		/// The local/bind address of the underlying socket.
 		@property NetworkAddress localAddress() const{
-			return m_bindAddress;
+			return bind_address;
 		}
 		
 		/** Locks the UDP connection to a certain peer.
@@ -121,13 +134,13 @@ version(VibeLibeventDriver) version(PFQDriver)
 		Otherwise communication with any reachable peer is possible.
 	    */
 		void connect(string host, ushort port){
-			NetworkAddress addr = m_driver.resolveHost(host, m_ctx.local_addr.family);
-			addr.port = port;
-			connect(addr);
+			auto address = resolveHost(host, AF_INET, false);
+			address.port = port;
+			connect(address);
 		}
 		/// ditto
 		void connect(NetworkAddress address){
-			//todo
+			dest_address = address;
 		}
 		
 		/** Sends a single packet.
@@ -136,9 +149,22 @@ version(VibeLibeventDriver) version(PFQDriver)
 		will be sent to the address specified by a call to connect().
 	    */
 		void send(in ubyte[] data, in NetworkAddress* peer_address = null){
-			ubyte[] pck = [];//todo
-			auto rs = pfq_send_async(p, pck.ptr, pck.length, udp_tx_batch_size);
-			debug writefln("pfq_send_async: %s", rs);
+			auto tmp = ipNetwork.getPayloadUdp(buffer);
+			memcpy(tmp.ptr, data.ptr, data.length); 
+			auto dest = peer_address is null? cast(const(NetworkAddress*))&dest_address: peer_address;
+			ubyte[] pck = ipNetwork.fillUdpPacket(buffer, data.length, 
+			                                      ip_v4(bind_address.sockAddrInet4.sin_addr.s_addr, true), bind_address.port, 
+			                                      ip_v4(dest.sockAddrInet4.sin_addr.s_addr, true), dest.port);
+			int rs;
+			debug foreach(b; pck) writef("%x ", b);
+			do{
+				rs = pfq_send(p, pck.ptr, pck.length);//udp_tx_batch_size
+				Thread.yield();
+			}while(rs==0);
+			debug{
+				char* x = pfq_error(p);
+				if(x !is null) writefln("pfq_send: %s", to!string(x)); else writefln("pfq_send: ok");
+			}
 		}
 		
 		/** Receives a single packet.
