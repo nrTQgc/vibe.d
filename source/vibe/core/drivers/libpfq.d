@@ -35,7 +35,7 @@ version(VibeLibeventDriver) version(PFQDriver)
 
 	//--------------------
 	//
-	enum dev = "lo\0";
+	enum dev = "eth0\0";
 	enum queue = 0;
 	enum node = 0;
 	enum udp_tx_batch_size = 1;
@@ -104,14 +104,14 @@ version(VibeLibeventDriver) version(PFQDriver)
 	}
 
 	/**
-	Represents a bound and possibly 'connected' UDP socket.
+	 Represents a bound and possibly 'connected' UDP socket.
     */
 	class PFQUDPConnection : UDPConnection {
 
 		private {
 			NetworkAddress bind_address;
 			NetworkAddress dest_address;
-
+			uint udp_tx_batch_size = 100;
 			bool m_canBroadcast = false;
 			ubyte[] buffer = new ubyte[2048];
 		}
@@ -148,7 +148,24 @@ version(VibeLibeventDriver) version(PFQDriver)
 		@property NetworkAddress localAddress() const{
 			return bind_address;
 		}
+
+		@property uint batchSize() const{ 
+			return udp_tx_batch_size; 
+		} 
 		
+		@property uint batchSize(uint value) { 
+			return udp_tx_batch_size = value; 
+		} 
+
+		void flushTxThread(){
+			pfq_wakeup_tx_thread(p);
+		}
+
+		string getLastPFQError(){
+			auto x = pfq_error(p);
+			return to!string(x);
+		}
+
 		/** Locks the UDP connection to a certain peer.
 
 		Once connected, the UDPConnection can only communicate with the specified peer.
@@ -179,18 +196,9 @@ version(VibeLibeventDriver) version(PFQDriver)
 			int rs;
 			//debug foreach(b; pck) writef("%02x ", b);
 			do{
-				rs = pfq_send(p, pck.ptr, pck.length);//udp_tx_batch_size
+				rs = pfq_send_async(p, pck.ptr, pck.length, udp_tx_batch_size);//udp_tx_batch_size
 				Thread.yield();
 			}while(rs==0);
-			/*debug{{
-				char* x = pfq_error(p);
-				if(x !is null) writefln("pfq_send_async: %s", to!string(x)); else writefln("pfq_send_async: ok");
-				}}
-			pfq_wakeup_tx_thread(p);
-			debug{{
-				char* x = pfq_error(p);
-				if(x !is null) writefln("pfq_wakeup_tx_thread: %s", to!string(x)); else writefln("pfq_wakeup_tx_thread: ok");
-				}}*/
 		}
 		
 		/** Receives a single packet.

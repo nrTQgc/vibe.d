@@ -181,7 +181,7 @@ class DefaultIpNetwork: IpNetwork{
 		udp.length = htons(cast(ushort)(UdpIp4Packet.sizeof + payload_len));
 		ubyte[] data = udp_raw[UdpIp4Packet.sizeof .. $];
 		enforce(data.length >= payload_len);
-		udp.checksum = htons(0x10);//htons(0x1bcd);//todo? UDP checksum is optional
+		udp.checksum = 0;//htons(0x10);//htons(0x1bcd);//todo? UDP checksum is optional
 		return buffer[0 .. (EthernetPacket.sizeof + Ip4Packet.sizeof + UdpIp4Packet.sizeof + payload_len)];
 	}
 	

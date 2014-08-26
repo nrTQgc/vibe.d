@@ -74,7 +74,7 @@ version(linux){
 			fillArp(rs);
 			fillGatewayInfo(rs);
 
-			debug writefln("Net conf: %s", rs);
+			//debug writefln("Net conf: %s", rs);
 			return rs;
 		}
 	}
