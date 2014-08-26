@@ -49,7 +49,7 @@ version(VibeLibeventDriver) version(PFQDriver)
 		}
 	}else{
 		static this(){
-			p =  pfq_open_(1500, 1, 1500, 4096);//pfq_open(64, 4096);
+			p =  pfq_open_(1500, 4096, 1500, 4096);//pfq_open(64, 4096);
 
 			if (p is null) {
 				debug writefln("pfq_open_ error: %s", pfq_error(p));
