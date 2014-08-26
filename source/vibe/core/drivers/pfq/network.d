@@ -51,11 +51,15 @@ struct NetDev{
 	ip_v4 net_mask;
 	mac_type[ip_v4] arp_table;
 	
-	this(ip_v4 _gateway_ip, ip_v4 _net_mask){
-		net_mask = _net_mask;
-		gateway_ip = _gateway_ip;
+	this(ip_v4 gateway_ip, ip_v4 net_mask){
+		this.net_mask = net_mask;
+		this.gateway_ip = gateway_ip;
 	}
-	
+	this(ip_v4 ip, ip_v4 gateway_ip, ip_v4 net_mask){
+		this.ip = ip;
+		this.net_mask = net_mask;
+		this.gateway_ip = gateway_ip;
+	}	
 	bool is_ip_local(ip_v4 ip){
 		auto tmp = gateway_ip.ip & net_mask.ip;
 		return ((ip.ip ^ tmp) & net_mask.ip) == 0;
@@ -91,7 +95,7 @@ class DefaultIpNetwork: IpNetwork{
 	}
 	enum MultiCastNet = NetDev(parseIpDot("224.0.0.0"), ip_v4(uint.max));
 	enum BroadCastNet = NetDev(parseIpDot("255.255.255.255"), ip_v4(uint.max));
-	enum LocalhostNet = NetDev(parseIpDot("127.0.0.0"), parseIpDot("255.0.0.0"));
+	enum LocalhostNet = NetDev(parseIpDot("127.0.0.1"), parseIpDot("127.0.0.0"), parseIpDot("255.0.0.0"));
 	unittest{
 		assert(LocalhostNet.is_ip_local(parseIpDot("127.0.0.1")));
 		assert(!LocalhostNet.is_ip_local(parseIpDot("17.0.0.1")));
@@ -123,20 +127,29 @@ class DefaultIpNetwork: IpNetwork{
 						writefln("\t%x : %s", key.ip, val);
 
 				}*/
+				cur = &dev;
 				if(dest==dev.ip){
 					dest_mac = dev.mac;
+
 				}else{
 					enforce(dest in dev.arp_table, "dest not in dev.arp_table: " ~ dev.name ~" : "~to!string(dest) ~ "/" ~ to!string(dev.arp_table));
 					dest_mac = dev.arp_table[dest];
 				}
 			}
-			if(dev.ip == src){
+			if(dev.ip.ip == src.ip){
+				//debug writefln("dev.ip == src");
 				src_mac = dev.mac;
 				cur = &dev;
-			}
+			}//else debug writefln("dev.ip(%x) != src(%x)", dev.ip.ip, src.ip);
 		}
 		if(dest_mac == NO_MAC && cur!=null){
 			dest_mac = cur.gateway_mac;
+		}
+		if(src.ip == 0 && cur !is null){
+			src_mac = cur.mac;
+			src = cur.ip;
+		} else{
+			src = LocalhostNet.ip;
 		}
 		
 		EthernetPacket *pck = cast(EthernetPacket*)buffer.ptr;
@@ -150,9 +163,9 @@ class DefaultIpNetwork: IpNetwork{
 		ip.ip_version = 0x45; //version 4 and header length 20 
 		ip.services_field = 0;
 		ip.total_length = htons(cast(ushort)(payload_len + 20 + 8));
-		ip.identification = 0;//?todo?
-		ip.flags = 0x02; //don't fragment
-		ip.fragment_offset = 0;
+		ip.identification = htons(0x32cb);//?todo?
+		//ip.flags = ; //don't fragment
+		ip.fragment_offset = htons(0x4000);
 		ip.time_to_live = 0x40;
 		ip.protocol = 0x11;
 		ip.source = src.ip;
@@ -168,7 +181,7 @@ class DefaultIpNetwork: IpNetwork{
 		udp.length = htons(cast(ushort)(UdpIp4Packet.sizeof + payload_len));
 		ubyte[] data = udp_raw[UdpIp4Packet.sizeof .. $];
 		enforce(data.length >= payload_len);
-		udp.checksum = 0;//todo
+		udp.checksum = htons(0x10);//htons(0x1bcd);//todo? UDP checksum is optional
 		return buffer[0 .. (EthernetPacket.sizeof + Ip4Packet.sizeof + UdpIp4Packet.sizeof + payload_len)];
 	}
 	
@@ -206,7 +219,6 @@ unittest{
 	net.fillUdpPacket(buffer, payload.length, dev.ip, 2000, globalIp, 8000);
 	assert(buffer[0 .. 6] == dev.gateway_mac);
 }
-
 
 
 version(LittleEndian){

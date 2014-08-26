@@ -20,9 +20,9 @@ version(VibeLibeventDriver) version(PFQDriver)
 	import core.stdc.string;
 	import vibe.core.drivers.pfq.network;
 	import vibe.core.drivers.pfq.linux_net;
-import core.thread;
-import vibe.core.drivers.pfq.ip;
-import std.exception;
+	import core.thread;
+	import vibe.core.drivers.pfq.ip;
+	import std.exception;
 
 
 	bool pfq_active = false;
@@ -35,30 +35,51 @@ import std.exception;
 
 	//--------------------
 	//
-	enum dev = "eth0";
+	enum dev = "lo\0";
+	enum queue = 0;
+	enum node = 0;
 	enum udp_tx_batch_size = 1;
 	//--------------------
 
-	static this(){
-		p = pfq_open(64, 4096);
+	version ( unittest ){
+		import etc.linux.memoryerror;
+		static this(){
+			static if (is(typeof(registerMemoryErrorHandler)))
+			registerMemoryErrorHandler();
+		}
+	}else{
+		static this(){
+			p =  pfq_open_(1500, 1, 1500, 4096);//pfq_open(64, 4096);
 
-		if (p == null) {
-			debug writefln("error: %s", pfq_error(p));
-		} else if (pfq_enable(p) < 0) {
-			debug writefln ("error: %s", pfq_error(p));
-		} else if (pfq_bind(p, dev.ptr, Q_ANY_QUEUE) < 0) {
-			debug writefln("error: %s", pfq_error(p));
-		} else if (pfq_timestamp_enable(p, 1) < 0) {
-			debug writefln("error: %s", pfq_error(p));
-		} else{
-			pfq_active = true;
+			if (p is null) {
+				debug writefln("pfq_open_ error: %s", pfq_error(p));
+			} else if (pfq_enable(p) < 0) {
+				debug writefln ("pfq_enable error: %s", pfq_error(p));
+			/*} else if (pfq_bind(p, dev.ptr, Q_ANY_QUEUE) < 0) {
+				debug writefln("pfq_bind error: %s", pfq_error(p));
+			} else if (pfq_timestamp_enable(p, 1) < 0) {
+				debug writefln("pfq_timestamp_enable error: %s", pfq_error(p));*/
+			} else if (pfq_bind_tx(p, dev.ptr, queue) < 0) {
+				debug writefln("pfq_bind_tx error: %s", pfq_error(p));
+			} else if (pfq_start_tx_thread(p, node) < 0) {
+				debug writefln("pfq_start_tx_thread error: %s", pfq_error(p));
+			} else{
+				pfq_active = true;
 
-			debug writefln("reading from %s...", dev);
+				debug writefln("reading from %s...", dev);
+			}
+
+			debug{{
+					char* x = pfq_error(p);
+					if(x !is null) writefln("pfq init: %s", to!string(x)); else writefln("pfq init : ok");
+				}}
+
+			NetworkConf conf = new LinuxNetworkConf();
+			ipNetwork = new DefaultIpNetwork(conf.getConfig());
 		}
 
-		NetworkConf conf = new LinuxNetworkConf();
-		ipNetwork = new DefaultIpNetwork(conf.getConfig());
 	}
+
 
 	class PFQDriver : Libevent2Driver {
 		private{
@@ -156,15 +177,20 @@ import std.exception;
 			                                      ip_v4(bind_address.sockAddrInet4.sin_addr.s_addr, true), bind_address.port, 
 			                                      ip_v4(dest.sockAddrInet4.sin_addr.s_addr, true), dest.port);
 			int rs;
-			debug foreach(b; pck) writef("%x ", b);
+			//debug foreach(b; pck) writef("%02x ", b);
 			do{
 				rs = pfq_send(p, pck.ptr, pck.length);//udp_tx_batch_size
 				Thread.yield();
 			}while(rs==0);
-			debug{
+			/*debug{{
 				char* x = pfq_error(p);
-				if(x !is null) writefln("pfq_send: %s", to!string(x)); else writefln("pfq_send: ok");
-			}
+				if(x !is null) writefln("pfq_send_async: %s", to!string(x)); else writefln("pfq_send_async: ok");
+				}}
+			pfq_wakeup_tx_thread(p);
+			debug{{
+				char* x = pfq_error(p);
+				if(x !is null) writefln("pfq_wakeup_tx_thread: %s", to!string(x)); else writefln("pfq_wakeup_tx_thread: ok");
+				}}*/
 		}
 		
 		/** Receives a single packet.
@@ -186,7 +212,40 @@ import std.exception;
 		}
 
 	}
+
+	unittest{
+		NetDev dev = NetDev();
+		dev.name = "test";
+		dev.mac = [1,1,1,2,2,2];
+		dev.ip = parseIpDot("10.0.2.129");
+		dev.hostname = "test.host";
+		
+		dev.gateway_mac = [3,3,3,4,4,4];
+		dev.gateway_ip = parseIpDot("10.0.2.1");
+		dev.net_mask = parseIpDot("255.255.255.0"); 
+		
+		auto localIp = parseIpDot("10.0.2.129");
+		dev.arp_table[localIp] = [1,1,1,2,2,2];
+		
+		auto net = new DefaultIpNetwork([dev]);
+		ubyte[] buffer = new ubyte[2048];
+		ubyte[] payload = new ubyte[500];
+		
+		auto tmp = net.getPayloadUdp(buffer);
+		memcpy(tmp.ptr, payload.ptr, payload.length); 
+		auto dest = resolveHost("10.0.2.129", AF_INET, false);
+		dest.port = 1234;
+		auto bind_address = dest;
+
+		ubyte[] pck = net.fillUdpPacket(buffer, payload.length, 
+		                                      ip_v4(bind_address.sockAddrInet4.sin_addr.s_addr, true), bind_address.port, 
+		                                      ip_v4(dest.sockAddrInet4.sin_addr.s_addr, true), dest.port);
+		foreach(b; pck) writef("%02x ", b);
+	}
 	
 
+
 }
+
+
 
