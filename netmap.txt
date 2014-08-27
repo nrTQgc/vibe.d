@@ -1,0 +1,11 @@
+KSRC
+make oldconfig && make prepare
+make scripts
+make -j3
+
+about rtl8169
+http://ytliu.info/blog/2014/05/28/netmap-setup/
+
+
+netmap/LINUX
+make clean; make KSRC=...........
