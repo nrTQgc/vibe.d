@@ -51,6 +51,10 @@ version(VibeLibeventDriver) version(PFQDriver)
 		}
 	}else{
 		static this(){
+
+			//kernel params:
+			// modinfo pfq
+			// cat /proc/modules | grep pfq | cut -f 1 -d " " | while read module; do  echo "Module: $module";  if [ -d "/sys/module/$module/parameters" ]; then   ls /sys/module/$module/parameters/ | while read parameter; do    echo -n "Parameter: $parameter --> ";    cat /sys/module/$module/parameters/$parameter;   done;  fi;  echo; done
 			static if (is(typeof(registerMemoryErrorHandler))) registerMemoryErrorHandler();
 
 			p =  pfq_open_group(Q_CLASS_DEFAULT, Q_POLICY_GROUP_PRIVATE, 1500, 4096, 1500, 4096);//pfq_open(64, 4096);
