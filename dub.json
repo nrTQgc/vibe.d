@@ -37,11 +37,10 @@
 			"libs-windows": ["wsock32", "ws2_32", "advapi32"],
 		},
 		{
-			"name": "libevent-pfq",
+			"name": "libevent-netmap",
 			"dependencies": {"libevent": "~master"},
-			"versions": ["VibeLibeventDriver", "PFQDriver"],
-                        "platforms": ["posix"],
-                        "libs": ["pfq"]
+			"versions": ["VibeLibeventDriver", "NetmapDriver"],
+                        "platforms": ["posix"]
 		},
 	        {
 			"name": "libev",

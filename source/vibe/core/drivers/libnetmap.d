@@ -1,6 +1,6 @@
 ﻿module vibe.core.drivers.libpfq;
 
-version(VibeLibeventDriver) version(PFQDriver)
+version(VibeLibeventDriver) version(NetmapDriver)
 {
 
 	import vibe.core.drivers.libevent2;
@@ -18,19 +18,16 @@ version(VibeLibeventDriver) version(PFQDriver)
 	import vibe.internal.pfq;
 	import vibe.core.drivers.utils;
 	import core.stdc.string;
-	import vibe.core.drivers.pfq.network;
-	import vibe.core.drivers.pfq.linux_net;
+	import vibe.core.drivers.netmap.network;
+	import vibe.core.drivers.netmap.linux_net;
 	import core.thread;
-	import vibe.core.drivers.pfq.ip;
+	import vibe.core.drivers.netmap.ip;
 	import std.exception;
 
 
-	bool pfq_active = false;
+	bool netmap_active = false;
 	IpNetwork ipNetwork;
 
-	pfq_t *p;
-	pfq_iterator_t it, it_e;
-	pfq_net_queue nq;
 	NetworkAddress[] sockets;
 
 	//--------------------
@@ -53,28 +50,15 @@ version(VibeLibeventDriver) version(PFQDriver)
 		static this(){
 
 			//kernel params:
-			// modinfo pfq
-			// cat /proc/modules | grep pfq | cut -f 1 -d " " | while read module; do  echo "Module: $module";  if [ -d "/sys/module/$module/parameters" ]; then   ls /sys/module/$module/parameters/ | while read parameter; do    echo -n "Parameter: $parameter --> ";    cat /sys/module/$module/parameters/$parameter;   done;  fi;  echo; done
+			// cat /proc/modules | grep netmap | cut -f 1 -d " " | while read module; do  echo "Module: $module";  if [ -d "/sys/module/$module/parameters" ]; then   ls /sys/module/$module/parameters/ | while read parameter; do    echo -n "Parameter: $parameter --> ";    cat /sys/module/$module/parameters/$parameter;   done;  fi;  echo; done
 			static if (is(typeof(registerMemoryErrorHandler))) registerMemoryErrorHandler();
+			import std.file;
+			if(exists("/sys/module/netmap_lin")){
 
-			p =  pfq_open_group(Q_CLASS_DEFAULT, Q_POLICY_GROUP_PRIVATE, 1500, 4096, 1500, 4096);//pfq_open(64, 4096);
-
-			if (p is null) {
-				debug writefln("pfq_open_ error: %s", pfq_error_str());
-			} else if (pfq_enable(p) < 0) {
-				debug writefln ("pfq_enable error: %s", pfq_error_str());
-			} else if (pfq_bind(p, dev.ptr, Q_ANY_QUEUE) < 0) {
-				debug writefln("pfq_bind error: %s", pfq_error_str());
-			} else if (pfq_timestamp_enable(p, 1) < 0) {
-				debug writefln("pfq_timestamp_enable error: %s", pfq_error_str());
-			} else if (pfq_bind_tx(p, dev.ptr, queue) < 0) {
-				debug writefln("pfq_bind_tx error: %s", pfq_error(p));
-			} else if (pfq_start_tx_thread(p, node) < 0) {
-				debug writefln("pfq_start_tx_thread error: %s", pfq_error_str());
-			} else{
-				pfq_active = true;
-				debug writefln("reading from %s...", dev);
+			}else{
+				debug writen("netmap_lin module isn't loaded");
 			}
+
 
 			NetworkConf conf = new LinuxNetworkConf();
 			ipNetwork = new DefaultIpNetwork(conf.getConfig());

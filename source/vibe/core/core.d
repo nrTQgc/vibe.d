@@ -30,7 +30,7 @@ import core.thread;
 
 version(VibeLibevDriver) import vibe.core.drivers.libev;
 version(VibeLibeventDriver) import vibe.core.drivers.libevent2;
-version(PFQDriver) import vibe.core.drivers.libpfq;
+version(NetmapDriver) import vibe.core.drivers.libnetmap;
 version(VibeWin32Driver) import vibe.core.drivers.win32;
 version(VibeWinrtDriver) import vibe.core.drivers.winrt;
 
@@ -1225,7 +1225,7 @@ private void setupDriver()
 	version(VibeWin32Driver) setEventDriver(new Win32EventDriver(s_core));
 	else version(VibeWinrtDriver) setEventDriver(new WinRTEventDriver(s_core));
 	else version(VibeLibevDriver) setEventDriver(new LibevDriver(s_core));
-	else version(VibeLibeventDriver) {version(PFQDriver) setEventDriver(new PFQDriver(s_core)); else setEventDriver(new Libevent2Driver(s_core));}
+	else version(VibeLibeventDriver) {version(NetmapDriver) setEventDriver(new NetmapDriver(s_core)); else setEventDriver(new Libevent2Driver(s_core));}
 	else static assert(false, "No event driver is available. Please specify a -version=Vibe*Driver for the desired driver.");
 	logTrace("driver %s created", (cast(Object)getEventDriver()).classinfo.name);
 }
