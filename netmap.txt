@@ -1,4 +1,5 @@
 KSRC
+cat /boot/config-$(uname -r) > .config
 make oldconfig && make prepare
 make scripts
 make -j3
