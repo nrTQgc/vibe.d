@@ -41,38 +41,36 @@ version(VibeLibeventDriver) version(PFQDriver)
 	enum udp_tx_batch_size = 1;
 	//--------------------
 
+	auto pfq_error_str(){
+		return to!string(pfq_error(p));
+	}
+
 	version ( unittest ){
-		import etc.linux.memoryerror;
 		static this(){
-			static if (is(typeof(registerMemoryErrorHandler)))
-			registerMemoryErrorHandler();
+
 		}
 	}else{
 		static this(){
-			p =  pfq_open_(1500, 4096, 1500, 4096);//pfq_open(64, 4096);
+			static if (is(typeof(registerMemoryErrorHandler))) registerMemoryErrorHandler();
+
+			p =  pfq_open_group(Q_CLASS_DEFAULT, Q_POLICY_GROUP_PRIVATE, 1500, 4096, 1500, 4096);//pfq_open(64, 4096);
 
 			if (p is null) {
-				debug writefln("pfq_open_ error: %s", pfq_error(p));
+				debug writefln("pfq_open_ error: %s", pfq_error_str());
 			} else if (pfq_enable(p) < 0) {
-				debug writefln ("pfq_enable error: %s", pfq_error(p));
-			/*} else if (pfq_bind(p, dev.ptr, Q_ANY_QUEUE) < 0) {
-				debug writefln("pfq_bind error: %s", pfq_error(p));
+				debug writefln ("pfq_enable error: %s", pfq_error_str());
+			} else if (pfq_bind(p, dev.ptr, Q_ANY_QUEUE) < 0) {
+				debug writefln("pfq_bind error: %s", pfq_error_str());
 			} else if (pfq_timestamp_enable(p, 1) < 0) {
-				debug writefln("pfq_timestamp_enable error: %s", pfq_error(p));*/
+				debug writefln("pfq_timestamp_enable error: %s", pfq_error_str());
 			} else if (pfq_bind_tx(p, dev.ptr, queue) < 0) {
 				debug writefln("pfq_bind_tx error: %s", pfq_error(p));
 			} else if (pfq_start_tx_thread(p, node) < 0) {
-				debug writefln("pfq_start_tx_thread error: %s", pfq_error(p));
+				debug writefln("pfq_start_tx_thread error: %s", pfq_error_str());
 			} else{
 				pfq_active = true;
-
 				debug writefln("reading from %s...", dev);
 			}
-
-			debug{{
-					char* x = pfq_error(p);
-					if(x !is null) writefln("pfq init: %s", to!string(x)); else writefln("pfq init : ok");
-				}}
 
 			NetworkConf conf = new LinuxNetworkConf();
 			ipNetwork = new DefaultIpNetwork(conf.getConfig());
@@ -84,6 +82,10 @@ version(VibeLibeventDriver) version(PFQDriver)
 	class PFQDriver : Libevent2Driver {
 		private{
 			DriverCore core;
+			bool m_exit = false;
+
+			pfq_net_queue nq;
+			pfq_iterator_t it, it_e;
 		}
 		this(DriverCore core)
 		{
@@ -94,9 +96,79 @@ version(VibeLibeventDriver) version(PFQDriver)
 
 		override UDPConnection listenUDP(ushort port, string bind_address = "0.0.0.0"){
 			debug writefln("PFQDriver - listenUDP, PFQ: %s", pfq_active);
-			return pfq_active ? new PFQUDPConnection(port, bind_address) : super.listenUDP(port, bind_address);
+			return pfq_active ? new PFQUDPConnection(core, port, bind_address) : super.listenUDP(port, bind_address);
 		}
 
+		/** Starts the event loop.
+
+		The loop will continue to run until either no more event listeners are active or until
+		exitEventLoop() is called.
+		*/
+		override int runEventLoop(){
+			int ret;
+			m_exit = false;
+			while (!m_exit && (ret = runEventLoopOnce()) == 0) {
+			}
+			return ret;
+		}
+
+		/* Processes all outstanding events, potentially blocking to wait for the first event.
+		*/
+		override int runEventLoopOnce(){
+			processEvents();
+			//todo check: what about block??
+			return 0;
+		}
+		
+		/** Processes all outstanding events if any, does not block.
+		*/
+		override bool processEvents(){
+			if(pfq_active) processPFQQueueRx();
+			super.processEvents();
+			if (m_exit) {
+				m_exit = false;
+				return false;
+			}
+			return true;
+		}
+		
+		/** Exits any running event loop.
+		*/
+		override void exitEventLoop(){
+			m_exit = true;
+			super.exitEventLoop();
+		}
+
+		protected{
+			int processPFQQueueRx(){
+				debug writefln("read from: %s; %s", p, nq);
+				int many = pfq_read(p, &nq, 1000000);
+				debug writefln("processPFQQueueRx: %s", many);
+				if (many < 0) {
+					throw new Exception("error: " ~ to!string(pfq_error(p)));
+				}
+				
+				debug writefln("queue size: %s", nq.len);
+				
+				it = pfq_net_queue_begin(&nq);
+				it_e = pfq_net_queue_end(&nq);
+				
+				for(; it != it_e; it = pfq_net_queue_next(&nq, it))
+				{
+					int x;
+					
+					while (!pfq_iterator_ready(&nq, it))
+						core.yieldForEvent();
+					
+					pfq_pkt_hdr *h = pfq_iterator_header(it);
+					
+					debug writefln("caplen:%s len:%s ifindex:%s hw_queue:%s -> ", h.caplen, h.len, h.if_index, h.hw_queue);
+					
+					ubyte *buff = pfq_iterator_data(it);
+				}
+				return 0;
+			}
+		}
 	}
 
 	bool cmpNetworkAddress(NetworkAddress a, NetworkAddress b){
@@ -109,6 +181,7 @@ version(VibeLibeventDriver) version(PFQDriver)
 	class PFQUDPConnection : UDPConnection {
 
 		private {
+			DriverCore core;
 			NetworkAddress bind_address;
 			NetworkAddress dest_address;
 			uint udp_tx_batch_size = 100;
@@ -117,10 +190,10 @@ version(VibeLibeventDriver) version(PFQDriver)
 		}
 
 
-		this(ushort port, string address = "0.0.0.0"){
-
+		this(DriverCore _core, ushort port, string address = "0.0.0.0"){
 			import std.range;
-			//todo what about situation: 0.0.0.0:port & 192.168.1.1:port
+
+			this.core = _core;
 			bind_address = resolveHost(address, AF_INET, false);
 			bind_address.port = port;
 			auto tmpSockets = sockets.assumeSorted!cmpNetworkAddress;
@@ -197,7 +270,7 @@ version(VibeLibeventDriver) version(PFQDriver)
 			//debug foreach(b; pck) writef("%02x ", b);
 			do{
 				rs = pfq_send_async(p, pck.ptr, pck.length, udp_tx_batch_size);//udp_tx_batch_size
-				Thread.yield();
+				core.yieldForEvent();
 			}while(rs==0);
 		}
 		
