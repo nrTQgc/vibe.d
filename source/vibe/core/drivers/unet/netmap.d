@@ -312,11 +312,10 @@ struct netmap_ring {
 	timeval	ts;		/* (k) time of last *sync() */
 	
 	/* opaque room for a mutex or similar object */
-
-	align (128) uint8_t		sem[128];// __attribute__((__aligned__(NM_CACHE_ALIGN)));
+	align (128)	uint8_t		sem[128]; //__attribute__((__aligned__(NM_CACHE_ALIGN)));
 	
 	/* the slots follow. This struct has variable size */
-	netmap_slot* slot;	/* array of slots. */
+	netmap_slot[0] slot;	/* array of slots. */
 };
 
 

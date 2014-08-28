@@ -1,7 +1,11 @@
 ﻿module vibe.core.drivers.unet.ethernet;
 
+import vibe.core.drivers.unet.network: d_htons;
+
 alias ubyte[6] mac_type;
 enum mac_type NO_MAC = [0];
+enum mac_type BROADCAST_MAC = [0xFF,0xFF,0xFF,0xFF,0xFF,0xFF];
+enum IP = d_htons(0x0800);
 
 struct EthernetPacket{
 	align (1):

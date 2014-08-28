@@ -1,5 +1,6 @@
 ﻿module vibe.core.drivers.unet.netmap_user;
 
+version (Posix){
 extern (C):
 /*
  * Copyright (C) 2011-2014 Universita` di Pisa. All rights reserved.
@@ -70,7 +71,8 @@ import core.stdc.stdint;
 //#include <stdint.h>
 //#include <sys/socket.h>		/* apple needs sockaddr */
 import  core.sys.posix.net.if_; //#include <net/if.h>		/* IFNAMSIZ */
-import netmap;
+import vibe.core.drivers.unet.netmap;
+import core.stdc.config;
 
 /* helper macro */
 /*#define _NETMAP_OFFSET(type, ptr, offset) \
@@ -92,7 +94,7 @@ import netmap;
 		(ring)->nr_buf_size )
 */
 auto _NETMAP_OFFSET(type)(const netmap_if* 	ptr, size_t offset){
-	return (cast(type)cast(void *)(cast(byte *)(ptr) + (offset)));
+		return (cast(type)cast(void *)(cast(ubyte *)(ptr) + (offset)));
 }
 
 auto NETMAP_IF(const netmap_if*  _base, size_t _ofs){
@@ -100,7 +102,7 @@ auto NETMAP_IF(const netmap_if*  _base, size_t _ofs){
 }
 
 auto NETMAP_TXRING(const netmap_if* nifp, size_t index){
-	return _NETMAP_OFFSET!(netmap_ring *)(nifp, *(nifp.ring_ofs.ptr + index ));
+		return _NETMAP_OFFSET!(netmap_ring *)(nifp, *(nifp.ring_ofs.ptr + index ));
 }
 auto NETMAP_RXRING(const netmap_if *nifp, size_t index) {
 	return _NETMAP_OFFSET!(netmap_ring *)(nifp, *(nifp.ring_ofs.ptr +index + nifp.ni_tx_rings + 1 ));
@@ -110,11 +112,11 @@ auto NETMAP_RXRING(const netmap_if *nifp) {
 }
 
 auto NETMAP_BUF(const netmap_ring *ring, size_t index){
-	return (cast(byte *)ring + ring.buf_ofs + (index*ring.nr_buf_size));
+		return (cast(ubyte *)ring + ring.buf_ofs + (index*ring.nr_buf_size));
 }
 
-auto NETMAP_BUF_IDX(const netmap_ring* ring, byte* buf){
-	return ( (cast(char *)buf - (cast(char *)ring + ring.buf_ofs) ) /  ring.nr_buf_size );
+auto NETMAP_BUF_IDX(const netmap_ring* ring, ubyte* buf){
+		return ( (cast(ubyte *)buf - (cast(ubyte *)ring + ring.buf_ofs) ) /  ring.nr_buf_size );
 }
 
 
@@ -720,3 +722,100 @@ u_char * nm_nextpkt(nm_desc *d, nm_pkthdr *hdr)
 //#endif /* NETMAP_WITH_LIBS */
 
 //#endif /* _NET_NETMAP_USER_H_ */
+
+version( linux )
+{
+	struct pollfd
+	{
+		int     fd;
+		short   events;
+		short   revents;
+	}
+	
+	alias c_ulong nfds_t;
+	
+	enum
+	{
+		POLLIN      = 0x001,
+		POLLRDNORM  = 0x040,
+		POLLRDBAND  = 0x080,
+		POLLPRI     = 0x002,
+		POLLOUT     = 0x004,
+		POLLWRNORM  = 0x100,
+		POLLWRBAND  = 0x200,
+		POLLERR     = 0x008,
+		POLLHUP     = 0x010,
+		POLLNVAL    = 0x020,
+	}
+	
+	int poll(pollfd*, nfds_t, int);
+}
+else version( OSX )
+{
+	struct pollfd
+	{
+		int     fd;
+		short   events;
+		short   revents;
+	};
+	
+	alias uint nfds_t;
+	
+	enum
+	{
+		POLLIN      = 0x0001,
+		POLLPRI     = 0x0002,
+		POLLOUT     = 0x0004,
+		POLLRDNORM  = 0x0040,
+		POLLWRNORM  = POLLOUT,
+		POLLRDBAND  = 0x0080,
+		POLLWRBAND  = 0x0100,
+		POLLEXTEND  = 0x0200,
+		POLLATTRIB  = 0x0400,
+		POLLNLINK   = 0x0800,
+		POLLWRITE   = 0x1000,
+		POLLERR     = 0x0008,
+		POLLHUP     = 0x0010,
+		POLLNVAL    = 0x0020,
+		
+		POLLSTANDARD = (POLLIN|POLLPRI|POLLOUT|POLLRDNORM|POLLRDBAND|
+		                POLLWRBAND|POLLERR|POLLHUP|POLLNVAL)
+	}
+	
+	int poll(pollfd*, nfds_t, int);
+}
+else version( FreeBSD )
+{
+	alias uint nfds_t;
+	
+	struct pollfd
+	{
+		int     fd;
+		short   events;
+		short   revents;
+	};
+	
+	enum
+	{
+		POLLIN      = 0x0001,
+		POLLPRI     = 0x0002,
+		POLLOUT     = 0x0004,
+		POLLRDNORM  = 0x0040,
+		POLLWRNORM  = POLLOUT,
+		POLLRDBAND  = 0x0080,
+		POLLWRBAND  = 0x0100,
+		//POLLEXTEND  = 0x0200,
+		//POLLATTRIB  = 0x0400,
+		//POLLNLINK   = 0x0800,
+		//POLLWRITE   = 0x1000,
+		POLLERR     = 0x0008,
+		POLLHUP     = 0x0010,
+		POLLNVAL    = 0x0020,
+		
+		POLLSTANDARD = (POLLIN|POLLPRI|POLLOUT|POLLRDNORM|POLLRDBAND|
+		                POLLWRBAND|POLLERR|POLLHUP|POLLNVAL)
+	}
+	
+	int poll(pollfd*, nfds_t, int);
+}
+}

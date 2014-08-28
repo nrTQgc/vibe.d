@@ -11,6 +11,9 @@ import vibe.core.net;
 import std.string;
 import std.conv;
 
+enum ubyte UDP_PROTOCOL = 0x11;
+
+
 ip_v4 parseIpDot(string address){
 	uint ip;
 	size_t idx;
@@ -156,7 +159,7 @@ class DefaultIpNetwork: IpNetwork{
 		
 		pck.src = src_mac;
 		pck.dest = dest_mac;
-		pck.type = htons(0x0800);
+		pck.type = IP;
 		ubyte[] ip_raw = buffer[EthernetPacket.sizeof .. $];
 		Ip4Packet* ip = cast(Ip4Packet*)ip_raw;
 		static assert(Ip4Packet.sizeof==20);
@@ -167,7 +170,7 @@ class DefaultIpNetwork: IpNetwork{
 		//ip.flags = ; //don't fragment
 		ip.fragment_offset = htons(0x4000);
 		ip.time_to_live = 0x40;
-		ip.protocol = 0x11;
+		ip.protocol = UDP_PROTOCOL;
 		ip.source = src.ip;
 		ip.dest = dest.ip;
 		ip.header_checksum = 0;

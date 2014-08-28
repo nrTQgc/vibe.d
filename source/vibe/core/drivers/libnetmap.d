@@ -1,4 +1,4 @@
-﻿module vibe.core.drivers.libpfq;
+﻿module vibe.core.drivers.libnetmap;
 
 version(VibeLibeventDriver) version(NetmapDriver)
 {
@@ -6,8 +6,14 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	import vibe.core.drivers.libevent2;
 	import vibe.core.driver;
 	debug import std.stdio;
+	import std.string;
 	import core.sys.posix.netinet.in_;
 	import core.sys.posix.netinet.tcp;
+	import core.sys.posix.fcntl;
+	import core.sys.posix.unistd;
+	import core.sys.posix.sys.ioctl;
+	import core.sys.posix.net.if_;
+	import core.sys.posix.sys.mman;
 	import core.time;
 	import std.conv;
 	import deimos.event2.bufferevent;
@@ -15,32 +21,39 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	import deimos.event2.event;
 	import deimos.event2.thread;
 	import deimos.event2.util;
-	import vibe.internal.pfq;
 	import vibe.core.drivers.utils;
 	import core.stdc.string;
-	import vibe.core.drivers.netmap.network;
-	import vibe.core.drivers.netmap.linux_net;
 	import core.thread;
-	import vibe.core.drivers.netmap.ip;
+	import vibe.core.drivers.unet.ip;
 	import std.exception;
+	import vibe.core.drivers.unet.network;
+	import vibe.core.drivers.unet.linux_net;
+	import vibe.core.drivers.unet.netmap;
+	import vibe.core.drivers.unet.netmap_user;
 
+	import vibe.core.drivers.unet.ethernet;
+	import vibe.core.drivers.unet.ip;
+	import vibe.core.drivers.unet.udp;
+
+	nm_desc* pa;
+	nm_desc* pb;
+	bool zerocopy = true;
+	pollfd poll_fd[2];
 
 	bool netmap_active = false;
 	IpNetwork ipNetwork;
-
+	mac_type myMac;
+	ip_v4 myIp4;
 	NetworkAddress[] sockets;
 
 	//--------------------
 	//
-	enum dev = "eth0\0";
+	enum dev = "netmap:eth0";
 	enum queue = 0;
 	enum node = 0;
-	enum udp_tx_batch_size = 1;
+	enum burst = 1024;
 	//--------------------
 
-	auto pfq_error_str(){
-		return to!string(pfq_error(p));
-	}
 
 	version ( unittest ){
 		static this(){
@@ -52,39 +65,72 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			//kernel params:
 			// cat /proc/modules | grep netmap | cut -f 1 -d " " | while read module; do  echo "Module: $module";  if [ -d "/sys/module/$module/parameters" ]; then   ls /sys/module/$module/parameters/ | while read parameter; do    echo -n "Parameter: $parameter --> ";    cat /sys/module/$module/parameters/$parameter;   done;  fi;  echo; done
 			static if (is(typeof(registerMemoryErrorHandler))) registerMemoryErrorHandler();
-			import std.file;
-			if(exists("/sys/module/netmap_lin")){
 
-			}else{
-				debug writen("netmap_lin module isn't loaded");
+			pa = nm_open(dev.toStringz(), null, 0, null);
+			if (pa is null) {
+				debug writefln("cannot open %s", dev);
+				return;
+			}
+			// XXX use a single mmap ?
+			pb = nm_open((dev~"^").toStringz(), null, NM_OPEN_NO_MMAP, pa);
+			if (pb == null) {
+				debug writefln("cannot open(2) %s", dev);
+				nm_close(pa);
+				pa = null;
+				return;
 			}
 
+			zerocopy = (pa.mem == pb.mem);
+			debug writefln("zerocopy: %s", zerocopy);
 
+			/* setup poll(2) variables. */
+			poll_fd[0].fd = pa.fd;
+			poll_fd[1].fd = pb.fd;
+
+
+			netmap_active = true;
 			NetworkConf conf = new LinuxNetworkConf();
+			foreach(c; conf.getConfig()){
+				//debug writefln("check %s==%s for mac: %s; rs: %s", c.name, dev, c.mac, c.name==dev);
+				if(c.name==dev){
+					debug writefln("my mac: %(%02x %), ip4: 0x%08x", c.mac, c.ip.ip);
+					myMac = c.mac;
+					myIp4 = c.ip;
+					break;
+				}
+			}
 			ipNetwork = new DefaultIpNetwork(conf.getConfig());
+
 		}
 
+		static ~this(){
+
+			if(pa){
+				nm_close(pa);
+			}
+			if(pb){
+				nm_close(pb);
+			}
+
+		}
 	}
 
 
-	class PFQDriver : Libevent2Driver {
+	class NetmapDriver : Libevent2Driver {
 		private{
 			DriverCore core;
 			bool m_exit = false;
-
-			pfq_net_queue nq;
-			pfq_iterator_t it, it_e;
 		}
 		this(DriverCore core)
 		{
 			super(core);
 			this.core = core;
-			debug writeln("PFQDriver");
+			debug writeln("NetmapDriver");
 		}
 
 		override UDPConnection listenUDP(ushort port, string bind_address = "0.0.0.0"){
-			debug writefln("PFQDriver - listenUDP, PFQ: %s", pfq_active);
-			return pfq_active ? new PFQUDPConnection(core, port, bind_address) : super.listenUDP(port, bind_address);
+			debug writefln("NetmapDriver - listenUDP, netmap: %s", netmap_active);
+			return netmap_active ? new NetmapUDPConnection(core, port, bind_address) : super.listenUDP(port, bind_address);
 		}
 
 		/** Starts the event loop.
@@ -103,21 +149,20 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		/* Processes all outstanding events, potentially blocking to wait for the first event.
 		*/
 		override int runEventLoopOnce(){
-			processEvents();
-			//todo check: what about block??
-			return 0;
+			if(netmap_active) processNetQueue();
+			//todo what about block???
+			return super.runEventLoopOnce();
 		}
 		
 		/** Processes all outstanding events if any, does not block.
 		*/
 		override bool processEvents(){
-			if(pfq_active) processPFQQueueRx();
-			super.processEvents();
 			if (m_exit) {
 				m_exit = false;
-				return false;
+			}else if(netmap_active){
+				processNetQueue();
 			}
-			return true;
+			return super.processEvents();
 		}
 		
 		/** Exits any running event loop.
@@ -128,33 +173,52 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		}
 
 		protected{
-			int processPFQQueueRx(){
-				debug writefln("read from: %s; %s", p, nq);
-				int many = pfq_read(p, &nq, 1000000);
-				debug writefln("processPFQQueueRx: %s", many);
-				if (many < 0) {
-					throw new Exception("error: " ~ to!string(pfq_error(p)));
+			int processNetQueue(){
+				int n0, n1, ret;
+				poll_fd[0].events = poll_fd[1].events = 0;
+				poll_fd[0].revents = poll_fd[1].revents = 0;
+				n0 = pkt_queued(pa, 0);
+				n1 = pkt_queued(pb, 0);
+				if (n0)
+					poll_fd[1].events |= POLLOUT;
+				else
+					poll_fd[0].events |= POLLIN;
+				if (n1)
+					poll_fd[0].events |= POLLOUT;
+				else
+					poll_fd[1].events |= POLLIN;
+				ret = poll(poll_fd.ptr, 2, 2500);
+				/*
+				debug writefln("poll %s [0] ev %x %x rx %s@%s tx %d, [1] ev %x %x rx %s@%s tx %s",
+						ret <= 0 ? "timeout" : "ok",
+						poll_fd[0].events, poll_fd[0].revents,
+						pkt_queued(pa, 0), NETMAP_RXRING(pa.nifp, pa.cur_rx_ring).cur,
+						pkt_queued(pa, 1), poll_fd[1].events,
+						poll_fd[1].revents,	pkt_queued(pb, 0),
+						NETMAP_RXRING(pb.nifp, pb.cur_rx_ring).cur,
+						pkt_queued(pb, 1));
+						*/
+				if (ret < 0)
+					return 0;
+				if (poll_fd[0].revents & POLLERR) {
+					netmap_ring *rx = NETMAP_RXRING(pa.nifp, pa.cur_rx_ring);
+					debug writefln("error on fd0, rx [%s,%s,%s)", rx.head, rx.cur, rx.tail);
 				}
-				
-				debug writefln("queue size: %s", nq.len);
-				
-				it = pfq_net_queue_begin(&nq);
-				it_e = pfq_net_queue_end(&nq);
-				
-				for(; it != it_e; it = pfq_net_queue_next(&nq, it))
-				{
-					int x;
-					
-					while (!pfq_iterator_ready(&nq, it))
-						core.yieldForEvent();
-					
-					pfq_pkt_hdr *h = pfq_iterator_header(it);
-					
-					debug writefln("caplen:%s len:%s ifindex:%s hw_queue:%s -> ", h.caplen, h.len, h.if_index, h.hw_queue);
-					
-					ubyte *buff = pfq_iterator_data(it);
+				if (poll_fd[1].revents & POLLERR) {
+					netmap_ring *rx = NETMAP_RXRING(pb.nifp, pb.cur_rx_ring);
+					debug writefln("error on fd1, rx [%d,%d,%d)", rx.head, rx.cur, rx.tail);
 				}
-				return 0;
+				if (poll_fd[0].revents & POLLOUT) {
+					move(pb, pa, burst);
+					// XXX we don't need the ioctl */
+					// ioctl(me[0].fd, NIOCTXSYNC, NULL);
+				}
+				if (poll_fd[1].revents & POLLOUT) {
+					move(pa, pb, burst);
+					// XXX we don't need the ioctl */
+					// ioctl(me[1].fd, NIOCTXSYNC, NULL);
+				}
+				return ret;
 			}
 		}
 	}
@@ -166,7 +230,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	/**
 	 Represents a bound and possibly 'connected' UDP socket.
     */
-	class PFQUDPConnection : UDPConnection {
+	class NetmapUDPConnection : UDPConnection {
 
 		private {
 			DriverCore core;
@@ -210,22 +274,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			return bind_address;
 		}
 
-		@property uint batchSize() const{ 
-			return udp_tx_batch_size; 
-		} 
-		
-		@property uint batchSize(uint value) { 
-			return udp_tx_batch_size = value; 
-		} 
 
-		void flushTxThread(){
-			pfq_wakeup_tx_thread(p);
-		}
-
-		string getLastPFQError(){
-			auto x = pfq_error(p);
-			return to!string(x);
-		}
 
 		/** Locks the UDP connection to a certain peer.
 
@@ -248,18 +297,15 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		will be sent to the address specified by a call to connect().
 	    */
 		void send(in ubyte[] data, in NetworkAddress* peer_address = null){
+
 			auto tmp = ipNetwork.getPayloadUdp(buffer);
 			memcpy(tmp.ptr, data.ptr, data.length); 
 			auto dest = peer_address is null? cast(const(NetworkAddress*))&dest_address: peer_address;
 			ubyte[] pck = ipNetwork.fillUdpPacket(buffer, data.length, 
 			                                      ip_v4(bind_address.sockAddrInet4.sin_addr.s_addr, true), bind_address.port, 
 			                                      ip_v4(dest.sockAddrInet4.sin_addr.s_addr, true), dest.port);
-			int rs;
-			//debug foreach(b; pck) writef("%02x ", b);
-			do{
-				rs = pfq_send_async(p, pck.ptr, pck.length, udp_tx_batch_size);//udp_tx_batch_size
-				core.yieldForEvent();
-			}while(rs==0);
+
+			//todo
 		}
 		
 		/** Receives a single packet.
@@ -313,6 +359,117 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	}
 	
 
+	/* move packts from src to destination */
+	int move(nm_desc *src, nm_desc *dst, u_int limit)
+	{
+		netmap_ring *txring;
+		netmap_ring *rxring;
+		u_int m = 0, si = src.first_rx_ring, di = dst.first_tx_ring;
+		string msg = (src.req.nr_ringid & NETMAP_SW_RING) ? "host->net" : "net->host";
+		
+		while (si <= src.last_rx_ring && di <= dst.last_tx_ring) {
+			rxring = NETMAP_RXRING(src.nifp, si);
+			txring = NETMAP_TXRING(dst.nifp, di);
+			//ND("txring %p rxring %p", txring, rxring);
+			if (nm_ring_empty(rxring)) {
+				si++;
+				continue;
+			}
+			if (nm_ring_empty(txring)) {
+				di++;
+				continue;
+			}
+			m += process_rings(rxring, txring, limit, msg);
+		}
+		return (m);
+	}
+
+	/*
+ 	* move up to 'limit' pkts from rxring to txring swapping buffers.
+ 	*/
+	int process_rings(netmap_ring *rxring, netmap_ring *txring, u_int limit, string msg)
+	{
+		u_int j, k, m = 0;
+		/* print a warning if any of the ring flags is set (e.g. NM_REINIT) */
+		if (rxring.flags || txring.flags)
+			debug writefln("warn: %s rxflags %x txflags %x", msg, rxring.flags, txring.flags);
+		j = rxring.cur; /* RX */
+		k = txring.cur; /* TX */
+		m = nm_ring_space(rxring);
+		if (m < limit)
+			limit = m;
+		m = nm_ring_space(txring);
+		if (m < limit)
+			limit = m;
+		m = limit;
+		//debug writefln("limit: %s", limit);
+		while (limit-- > 0) {
+			//ubyte *test = cast(ubyte*)rxring;
+			//writefln("%(%02x %)", test[0 .. 64]);
+			//test = cast(ubyte*)txring;
+			//writefln("%(%02x %)", test[0 .. 64]);
+
+
+			netmap_slot *rs = rxring.slot.ptr + j;
+			netmap_slot *ts = txring.slot.ptr + k;
+			
+			/* swap packets */
+			if (ts.buf_idx < 2 || rs.buf_idx < 2) {
+				debug writefln("wrong index rx[%s] = %s  -> tx[%s] = %s", j, rs.buf_idx, k, ts.buf_idx);
+				assert(0);
+				//sleep(2);
+			}
+			/* copy the packet length. */
+			if (rs.len > 2048) {
+				debug writefln("wrong len %s rx[%s] -> tx[%s]", rs.len, j, k);
+				rs.len = 0;
+				continue;
+			} else {// if (verbose > 1)
+				//debug writefln("%s send len %s rx[%s] -> tx[%s]", msg, rs.len, j, k);
+			}
+			ts.len = rs.len;
+			if (zerocopy) {
+				uint32_t pkt = ts.buf_idx;
+				ts.buf_idx = rs.buf_idx;
+				rs.buf_idx = pkt;
+				/* report the buffer change. */
+				ts.flags |= NS_BUF_CHANGED;
+				rs.flags |= NS_BUF_CHANGED;
+			} else {
+				ubyte *rxbuf = NETMAP_BUF(rxring, rs.buf_idx);
+				ubyte *txbuf = NETMAP_BUF(txring, ts.buf_idx);
+				nm_pkt_copy(rxbuf, txbuf, ts.len);
+			}
+			j = nm_ring_next(rxring, j);
+			k = nm_ring_next(txring, k);
+		}
+		rxring.head = rxring.cur = j;
+		txring.head = txring.cur = k;
+		//debug if (/*verbose &&*/ m > 0) writefln("%s sent %s packets to %s", msg, m, txring);
+		
+		return (m);
+	}
+
+
+	/*
+ 	* how many packets on this set of queues ?
+ 	*/
+	int pkt_queued(nm_desc *d, bool tx)
+	{
+		u_int i, tot = 0;
+		
+		if (tx) {
+			for (i = d.first_tx_ring; i <= d.last_tx_ring; i++) {
+				tot += nm_ring_space(NETMAP_TXRING(d.nifp, i));
+			}
+		} else {
+			for (i = d.first_rx_ring; i <= d.last_rx_ring; i++) {
+				tot += nm_ring_space(NETMAP_RXRING(d.nifp, i));
+			}
+		}
+		//debug writefln("p: %s; total: %s", d, tot);
+		return tot;
+	}
 
 }
 

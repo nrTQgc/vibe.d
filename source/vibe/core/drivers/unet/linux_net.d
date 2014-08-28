@@ -7,6 +7,7 @@ version(linux){
 	import std.array;
 	import std.string;
 	import std.algorithm;
+	import core.sys.posix.unistd;
 	import vibe.core.drivers.unet.lsif;
 	import std.conv;
 	import vibe.core.drivers.unet.network;
@@ -21,6 +22,7 @@ version(linux){
 			char            buf[8192];
 			/* Get a socket handle. */
 			int sck = socket(AF_INET, SOCK_DGRAM, 0);
+			scope(exit) close(sck);
 			if(sck < 0) {
 				throw new Exception("socket");
 			}
