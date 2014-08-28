@@ -298,7 +298,7 @@ auto NETMAP_FD(void * d){
  *
  * XXX only for multiples of 64 bytes, non overlapped.
  */
-void nm_pkt_copy(void*  _src, void *_dst, int l)
+void nm_pkt_copy(void*  _src, void *_dst, size_t l)
 {
 	uint64_t *src = cast(uint64_t*)_src;
 	uint64_t *dst = cast(uint64_t*)_dst;

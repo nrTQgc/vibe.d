@@ -92,7 +92,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			NetworkConf conf = new LinuxNetworkConf();
 			foreach(c; conf.getConfig()){
 				//debug writefln("check %s==%s for mac: %s; rs: %s", c.name, dev, c.mac, c.name==dev);
-				if(c.name==dev){
+				if(("netmap:"~c.name)==dev){
 					debug writefln("my mac: %(%02x %), ip4: 0x%08x", c.mac, c.ip.ip);
 					myMac = c.mac;
 					myIp4 = c.ip;
@@ -305,7 +305,9 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			                                      ip_v4(bind_address.sockAddrInet4.sin_addr.s_addr, true), bind_address.port, 
 			                                      ip_v4(dest.sockAddrInet4.sin_addr.s_addr, true), dest.port);
 
-			//todo
+			while(send_packet(NETMAP_TXRING(pa.nifp, pa.first_tx_ring), pck)==0){
+				//yield();
+			}
 		}
 		
 		/** Receives a single packet.
@@ -427,18 +429,20 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			} else {// if (verbose > 1)
 				//debug writefln("%s send len %s rx[%s] -> tx[%s]", msg, rs.len, j, k);
 			}
-			ts.len = rs.len;
-			if (zerocopy) {
-				uint32_t pkt = ts.buf_idx;
-				ts.buf_idx = rs.buf_idx;
-				rs.buf_idx = pkt;
-				/* report the buffer change. */
-				ts.flags |= NS_BUF_CHANGED;
-				rs.flags |= NS_BUF_CHANGED;
-			} else {
-				ubyte *rxbuf = NETMAP_BUF(rxring, rs.buf_idx);
-				ubyte *txbuf = NETMAP_BUF(txring, ts.buf_idx);
-				nm_pkt_copy(rxbuf, txbuf, ts.len);
+			ubyte *rxbuf = NETMAP_BUF(rxring, rs.buf_idx);
+			if(!routePacket(rxbuf, rs.len)){
+				ts.len = rs.len;
+				if (zerocopy) {
+					uint32_t pkt = ts.buf_idx;
+					ts.buf_idx = rs.buf_idx;
+					rs.buf_idx = pkt;
+					/* report the buffer change. */
+					ts.flags |= NS_BUF_CHANGED;
+					rs.flags |= NS_BUF_CHANGED;
+				} else {
+					ubyte *txbuf = NETMAP_BUF(txring, ts.buf_idx);
+					nm_pkt_copy(rxbuf, txbuf, ts.len);
+				}
 			}
 			j = nm_ring_next(rxring, j);
 			k = nm_ring_next(txring, k);
@@ -471,7 +475,55 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		return tot;
 	}
 
-}
+	bool routePacket(ubyte *data, uint len){
+		EthernetPacket* ethPck = cast(EthernetPacket*)data;
+		if( (/*todo broadcast: ethPck.dest!=BROADCAST_MAC &&*/ ethPck.dest!=myMac) || ethPck.type!=IP){
+			//debug if (ethPck.dest!=BROADCAST_MAC) writefln("%(%02x %)", data[0 .. 32]);
+			return false;
+		}
+		//debug writefln("eth detected: %(%02x %)", data[0 .. 32]);
+		data = data + EthernetPacket.sizeof;
+		Ip4Packet* ipPck = cast(Ip4Packet*)data;
+		if( (ipPck.ip_version&0xf0)!=0x40 || ipPck.protocol!=UDP_PROTOCOL || ipPck.dest!=myIp4.ip /*todo broadcast: */){
+			//debug writefln("%x %x %x %(%02x %)", (ipPck.ip_version&0xf0), ipPck.protocol, ipPck.dest, data[0 .. 32]);
+			return false;
+		}
+		//debug writefln("ip detected: %(%02x %)", data[0 .. 32]);
+		data = data + 4*(ipPck.header_length&0x0f);
+		UdpIp4Packet* udpPck = cast(UdpIp4Packet*)data;
+		if(udpPck.dst_port!=d_htons(1234)){
+			return false;
+		}
+		data = data + UdpIp4Packet.sizeof;
+		debug writefln("udp payload: %(%02x %)", data[0 .. d_ntohs(udpPck.length)]);
+		/*
+		ubyte[] payload =[];
+		payload.length = d_ntohs(udpPck.length);
+		memcpy(cast(void*)data, cast(void*)payload.ptr, payload.length);
+		debug writefln("udp payload: %(%02x %)", payload);*/
+		return true;
+	}
 
+	//todo use batch
+	int send_packet(netmap_ring *ring, ubyte[] pkt)
+	{
+		uint n = nm_ring_space(ring);
+		if (n < 1){
+			return 0;
+		}
+		auto cur = ring.cur;
+		netmap_slot *slot = ring.slot.ptr + cur;
+		ubyte *p = NETMAP_BUF(ring, slot.buf_idx);
+		//todo GC and pkt.ptr???
+		slot.ptr = cast(void*)pkt.ptr;
+		slot.len = cast(ushort)pkt.length;
+		slot.flags &= ~NS_MOREFRAG;
+		slot.flags |= NS_INDIRECT;
+		slot.flags |= NS_REPORT;
+		cur = nm_ring_next(ring, cur);
+		ring.head = ring.cur = cur;
+		return 1;
+	}
+}
 
 
