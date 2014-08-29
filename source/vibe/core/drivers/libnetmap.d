@@ -514,12 +514,10 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		auto cur = ring.cur;
 		netmap_slot *slot = ring.slot.ptr + cur;
 		ubyte *p = NETMAP_BUF(ring, slot.buf_idx);
-		//todo GC and pkt.ptr???
-		slot.ptr = cast(void*)pkt.ptr;
+		memcpy(p, pkt.ptr, pkt.length);
+		memset(p + pkt.length, 0, 2048 - pkt.length);
+		slot.flags |= NS_BUF_CHANGED;
 		slot.len = cast(ushort)pkt.length;
-		slot.flags &= ~NS_MOREFRAG;
-		slot.flags |= NS_INDIRECT;
-		slot.flags |= NS_REPORT;
 		cur = nm_ring_next(ring, cur);
 		ring.head = ring.cur = cur;
 		return 1;
