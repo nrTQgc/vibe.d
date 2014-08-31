@@ -4,12 +4,14 @@ import vibe.core.drivers.unet.ip;
 import vibe.core.drivers.unet.ethernet;
 import vibe.core.drivers.unet.udp;
 import core.sys.posix.arpa.inet;
+import vibe.core.drivers.utils;
 import std.exception;
 import std.socket;
 debug import std.stdio;
 import vibe.core.net;
 import std.string;
 import std.conv;
+import vibe.core.drivers.unet.utils;
 
 enum ubyte UDP_PROTOCOL = 0x11;
 
@@ -83,8 +85,10 @@ interface NetworkConf{
 	NetDev[] getConfig();
 }
 
-interface IpNetwork{
+interface IpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE){
 	ubyte[] getPayloadUdp(ubyte[] buffer);
+	bool routePacket(ubyte *data, uint len);
+	void registerUdpRxQueue(ip_v4 address, ushort port, ref UdpRxQueue!(UDP_RX_QUEUE_MAX_SIZE, UDP_PACKET_MAX_SIZE) queue);
 	ubyte[] fillUdpPacket(ubyte[] buffer, size_t payload_len, ip_v4 src, ushort src_port, ip_v4 dest, ushort dst_port);
 }
 
@@ -92,9 +96,17 @@ interface IpNetwork{
 
 
 
-class DefaultIpNetwork: IpNetwork{
+class DefaultIpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE): IpNetwork!(UDP_RX_QUEUE_MAX_SIZE, UDP_PACKET_MAX_SIZE){
 	private{
 		NetDev[] network;
+		alias UdpRxQueue!(UDP_RX_QUEUE_MAX_SIZE, UDP_PACKET_MAX_SIZE)* QUEUE_PTR;
+		alias QUEUE_PTR[ushort] ports_map;
+		ports_map[ip_v4] addresses_map;
+
+		mac_type myMac;
+		ip_v4 myIp4;
+
+
 	}
 	enum MultiCastNet = NetDev(parseIpDot("224.0.0.0"), ip_v4(uint.max));
 	enum BroadCastNet = NetDev(parseIpDot("255.255.255.255"), ip_v4(uint.max));
@@ -105,9 +117,33 @@ class DefaultIpNetwork: IpNetwork{
 		assert(!LocalhostNet.is_ip_local(parseIpDot("10.0.2.129")));
 	}
 
-	this(NetDev[] network){
+	this(NetDev[] network, string dev){
 		this.network = network;
+		foreach(c; network){
+			//debug writefln("check %s==%s for mac: %s; rs: %s", c.name, dev, c.mac, c.name==dev);
+			if(("netmap:"~c.name)==dev){
+				debug writefln("my mac: %(%02x %), ip4: 0x%08x", c.mac, c.ip.ip);
+				myMac = c.mac;
+				myIp4 = c.ip;
+				break;
+			}
+		}
 	}
+
+	override void registerUdpRxQueue(ip_v4 address, ushort port, ref UdpRxQueue!(UDP_RX_QUEUE_MAX_SIZE, UDP_PACKET_MAX_SIZE) queue){
+		ports_map map;
+		if(address in addresses_map){
+			map = addresses_map[address];
+		} else if (address == ZERO_IP){
+			map = addresses_map[ZERO_IP];
+		} else{
+			addresses_map[address] = map;
+		}
+		socketEnforce(port !in map, "Error enabling socket address reuse on listening socket");
+		addresses_map[address][port] = &queue;
+	}
+
+
 
 	override ubyte[] getPayloadUdp(ubyte[] buffer){
 		return buffer[(EthernetPacket.sizeof + Ip4Packet.sizeof + UdpIp4Packet.sizeof) .. $];
@@ -186,6 +222,44 @@ class DefaultIpNetwork: IpNetwork{
 		enforce(data.length >= payload_len);
 		udp.checksum = 0;//htons(0x10);//htons(0x1bcd);//todo? UDP checksum is optional
 		return buffer[0 .. (EthernetPacket.sizeof + Ip4Packet.sizeof + UdpIp4Packet.sizeof + payload_len)];
+	}
+
+	override bool routePacket(ubyte *data, uint len){
+		EthernetPacket* ethPck = cast(EthernetPacket*)data;
+		if( (/*todo broadcast: ethPck.dest!=BROADCAST_MAC &&*/ ethPck.dest!=myMac) || ethPck.type!=IP){
+			//debug if (ethPck.dest!=BROADCAST_MAC) writefln("%(%02x %)", data[0 .. 32]);
+			return false;
+		}
+		//debug writefln("eth detected: %(%02x %)", data[0 .. 32]);
+		data = data + EthernetPacket.sizeof;
+		Ip4Packet* ipPck = cast(Ip4Packet*)data;
+		if( (ipPck.ip_version&0xf0)!=0x40 || ipPck.protocol!=UDP_PROTOCOL || ipPck.dest!=myIp4.ip /*todo broadcast: */){
+			//debug writefln("%x %x %x %(%02x %)", (ipPck.ip_version&0xf0), ipPck.protocol, ipPck.dest, data[0 .. 32]);
+			return false;
+		}
+		//debug writefln("ip detected: %(%02x %)", data[0 .. 32]);
+		if(myIp4 !in addresses_map){
+			return false;
+		}
+		auto map = addresses_map[myIp4];
+
+		data = data + 4*(ipPck.header_length&0x0f);
+		UdpIp4Packet* udpPck = cast(UdpIp4Packet*)data;
+		auto dest_port = d_ntohs(udpPck.dst_port);
+		if(dest_port !in map){
+			return false;
+		}
+		auto queue = map[dest_port];
+
+		data = data + UdpIp4Packet.sizeof;
+		queue.add(data, d_ntohs(udpPck.length));
+		//debug writefln("udp payload: %(%02x %)", data[0 .. d_ntohs(udpPck.length)]);
+		/*
+		ubyte[] payload =[];
+		payload.length = d_ntohs(udpPck.length);
+		memcpy(cast(void*)data, cast(void*)payload.ptr, payload.length);
+		debug writefln("udp payload: %(%02x %)", payload);*/
+		return true;
 	}
 	
 }

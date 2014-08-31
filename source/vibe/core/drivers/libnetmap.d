@@ -21,7 +21,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	import deimos.event2.event;
 	import deimos.event2.thread;
 	import deimos.event2.util;
-	import vibe.core.drivers.utils;
+
 	import core.stdc.string;
 	import core.thread;
 	import vibe.core.drivers.unet.ip;
@@ -34,6 +34,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	import vibe.core.drivers.unet.ethernet;
 	import vibe.core.drivers.unet.ip;
 	import vibe.core.drivers.unet.udp;
+	import vibe.core.drivers.unet.utils;
 
 	nm_desc* pa;
 	nm_desc* pb;
@@ -41,16 +42,12 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	pollfd poll_fd[2];
 
 	bool netmap_active = false;
-	IpNetwork ipNetwork;
-	mac_type myMac;
-	ip_v4 myIp4;
-	NetworkAddress[] sockets;
+	DefaultIpNetwork!(128, 1024) ipNetwork;
+
 
 	//--------------------
 	//
 	enum dev = "netmap:eth0";
-	enum queue = 0;
-	enum node = 0;
 	enum burst = 1024;
 	//--------------------
 
@@ -87,20 +84,10 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			poll_fd[0].fd = pa.fd;
 			poll_fd[1].fd = pb.fd;
 
+			auto conf = new LinuxNetworkConf().getConfig();
 
+			ipNetwork = new DefaultIpNetwork!(128, 1024)(conf, dev);
 			netmap_active = true;
-			NetworkConf conf = new LinuxNetworkConf();
-			foreach(c; conf.getConfig()){
-				//debug writefln("check %s==%s for mac: %s; rs: %s", c.name, dev, c.mac, c.name==dev);
-				if(("netmap:"~c.name)==dev){
-					debug writefln("my mac: %(%02x %), ip4: 0x%08x", c.mac, c.ip.ip);
-					myMac = c.mac;
-					myIp4 = c.ip;
-					break;
-				}
-			}
-			ipNetwork = new DefaultIpNetwork(conf.getConfig());
-
 		}
 
 		static ~this(){
@@ -130,7 +117,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 
 		override UDPConnection listenUDP(ushort port, string bind_address = "0.0.0.0"){
 			debug writefln("NetmapDriver - listenUDP, netmap: %s", netmap_active);
-			return netmap_active ? new NetmapUDPConnection(core, port, bind_address) : super.listenUDP(port, bind_address);
+			return netmap_active ? new NetmapUDPConnection(this, core, port, bind_address) : super.listenUDP(port, bind_address);
 		}
 
 		/** Starts the event loop.
@@ -239,19 +226,22 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			uint udp_tx_batch_size = 100;
 			bool m_canBroadcast = false;
 			ubyte[] buffer = new ubyte[2048];
+			ip_v4 src;
+			ushort src_port;
+			UdpRxQueue!(128, 1024) rxQueue;
+			NetmapDriver ndriver;
 		}
 
 
-		this(DriverCore _core, ushort port, string address = "0.0.0.0"){
+		this(NetmapDriver ndriver, DriverCore _core, ushort port, string address = "0.0.0.0"){
 			import std.range;
-
+			this.ndriver = ndriver;
 			this.core = _core;
 			bind_address = resolveHost(address, AF_INET, false);
 			bind_address.port = port;
-			auto tmpSockets = sockets.assumeSorted!cmpNetworkAddress;
-			socketEnforce(!tmpSockets.contains(bind_address), "Error enabling socket address reuse on listening socket");
-			sockets ~= bind_address;
-			sockets.sort!((a,b) => a.toAddressString>b.toAddressString);
+			src = parseIpDot(address);
+			src_port = port;
+			ipNetwork.registerUdpRxQueue(src, src_port, rxQueue);
 		}
 		/** Returns the address to which the UDP socket is bound.
 	    */
@@ -302,7 +292,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			memcpy(tmp.ptr, data.ptr, data.length); 
 			auto dest = peer_address is null? cast(const(NetworkAddress*))&dest_address: peer_address;
 			ubyte[] pck = ipNetwork.fillUdpPacket(buffer, data.length, 
-			                                      ip_v4(bind_address.sockAddrInet4.sin_addr.s_addr, true), bind_address.port, 
+			                                      src, src_port, 
 			                                      ip_v4(dest.sockAddrInet4.sin_addr.s_addr, true), dest.port);
 
 			while(send_packet(NETMAP_TXRING(pa.nifp, pa.first_tx_ring), pck)==0){
@@ -318,16 +308,36 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		specified duration has elapsed.
 	    */
 		ubyte[] recv(ubyte[] buf = null, NetworkAddress* peer_address = null){
-			//todo
-			return [];
+			if(!buf) buf = [];
+			while(!rxQueue.hasNext()){
+				core.yieldForEvent();
+			}
+			enforce(rxQueue.get(buf), "Can't read data");
+			return buf;
 		}
 
 		/// ditto
 		ubyte[] recv(Duration timeout, ubyte[] buf = null, NetworkAddress* peer_address = null){
-			//todo
-			return [];
+			size_t tm = size_t.max;
+			if (timeout >= 0.seconds && timeout != Duration.max) {
+				tm = ndriver.createTimer(null);
+				ndriver.rearmTimer(tm, timeout, false);
+				ndriver.acquireTimer(tm);
+			}
+			scope (exit) {
+				if (tm != size_t.max) ndriver.releaseTimer(tm);
+			}
+			while (true) {
+				if(rxQueue.hasNext){
+					enforce(rxQueue.get(buf), "Can't read data");
+					return buf;
+				}
+				if (timeout != Duration.max) {
+					enforce(timeout > 0.seconds && ndriver.isTimerPending(tm), "UDP receive timeout.");
+				}
+				core.yieldForEvent();
+			}
 		}
-
 	}
 
 	unittest{
@@ -430,7 +440,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 				//debug writefln("%s send len %s rx[%s] -> tx[%s]", msg, rs.len, j, k);
 			}
 			ubyte *rxbuf = NETMAP_BUF(rxring, rs.buf_idx);
-			if(!routePacket(rxbuf, rs.len)){
+			if(!ipNetwork.routePacket(rxbuf, rs.len)){
 				ts.len = rs.len;
 				if (zerocopy) {
 					uint32_t pkt = ts.buf_idx;
@@ -475,34 +485,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		return tot;
 	}
 
-	bool routePacket(ubyte *data, uint len){
-		EthernetPacket* ethPck = cast(EthernetPacket*)data;
-		if( (/*todo broadcast: ethPck.dest!=BROADCAST_MAC &&*/ ethPck.dest!=myMac) || ethPck.type!=IP){
-			//debug if (ethPck.dest!=BROADCAST_MAC) writefln("%(%02x %)", data[0 .. 32]);
-			return false;
-		}
-		//debug writefln("eth detected: %(%02x %)", data[0 .. 32]);
-		data = data + EthernetPacket.sizeof;
-		Ip4Packet* ipPck = cast(Ip4Packet*)data;
-		if( (ipPck.ip_version&0xf0)!=0x40 || ipPck.protocol!=UDP_PROTOCOL || ipPck.dest!=myIp4.ip /*todo broadcast: */){
-			//debug writefln("%x %x %x %(%02x %)", (ipPck.ip_version&0xf0), ipPck.protocol, ipPck.dest, data[0 .. 32]);
-			return false;
-		}
-		//debug writefln("ip detected: %(%02x %)", data[0 .. 32]);
-		data = data + 4*(ipPck.header_length&0x0f);
-		UdpIp4Packet* udpPck = cast(UdpIp4Packet*)data;
-		if(udpPck.dst_port!=d_htons(1234)){
-			return false;
-		}
-		data = data + UdpIp4Packet.sizeof;
-		debug writefln("udp payload: %(%02x %)", data[0 .. d_ntohs(udpPck.length)]);
-		/*
-		ubyte[] payload =[];
-		payload.length = d_ntohs(udpPck.length);
-		memcpy(cast(void*)data, cast(void*)payload.ptr, payload.length);
-		debug writefln("udp payload: %(%02x %)", payload);*/
-		return true;
-	}
+
 
 	//todo use batch
 	int send_packet(netmap_ring *ring, ubyte[] pkt)

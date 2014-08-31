@@ -14,6 +14,7 @@ struct ip_v4{
 		this.ip = (netOrder)? ip : d_htonl(ip);
 	}
 };
+enum ZERO_IP = ip_v4(0);
 alias ubyte[16] ip_v6;
 
 
