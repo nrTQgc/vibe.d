@@ -54,26 +54,28 @@ struct NetDev{
 	mac_type gateway_mac;
 	ip_v4 gateway_ip;
 	ip_v4 net_mask;
+	ip_v4 network;
 	mac_type[ip_v4] arp_table;
 	
 	this(ip_v4 gateway_ip, ip_v4 net_mask){
 		this.net_mask = net_mask;
 		this.gateway_ip = gateway_ip;
 	}
-	this(ip_v4 ip, ip_v4 gateway_ip, ip_v4 net_mask){
+	this(ip_v4 ip, ip_v4 gateway_ip, ip_v4 net_mask, ip_v4 network){
 		this.ip = ip;
+		this.network = network;
 		this.net_mask = net_mask;
 		this.gateway_ip = gateway_ip;
 	}	
 	bool is_ip_local(ip_v4 ip){
-		auto tmp = gateway_ip.ip & net_mask.ip;
-		return ((ip.ip ^ tmp) & net_mask.ip) == 0;
+		return ((ip.ip & net_mask.ip) ^ network.ip) == 0;
 	}
 	
 	unittest{
 		auto n = NetDev();
+
 		n.net_mask = ip_v4(0x00FFFFFF);
-		n.gateway_ip = ip_v4(0x0102000A);
+		n.network = ip_v4(0x0002000A);
 		assert(n.is_ip_local(ip_v4(0x0102000A)));
 		assert(n.is_ip_local(ip_v4(0x0802000A)));
 		assert(!n.is_ip_local(ip_v4(0x0802000B)));
@@ -103,14 +105,11 @@ class DefaultIpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE): 
 		alias QUEUE_PTR[ushort] ports_map;
 		ports_map[ip_v4] addresses_map;
 
-		mac_type myMac;
-		ip_v4 myIp4;
-
-
+		NetDev myDev;
 	}
 	enum MultiCastNet = NetDev(parseIpDot("224.0.0.0"), ip_v4(uint.max));
 	enum BroadCastNet = NetDev(parseIpDot("255.255.255.255"), ip_v4(uint.max));
-	enum LocalhostNet = NetDev(parseIpDot("127.0.0.1"), parseIpDot("127.0.0.0"), parseIpDot("255.0.0.0"));
+	enum LocalhostNet = NetDev(parseIpDot("127.0.0.1"), parseIpDot("127.0.0.1"), parseIpDot("255.0.0.0"), parseIpDot("127.0.0.0"));
 	unittest{
 		assert(LocalhostNet.is_ip_local(parseIpDot("127.0.0.1")));
 		assert(!LocalhostNet.is_ip_local(parseIpDot("17.0.0.1")));
@@ -122,9 +121,8 @@ class DefaultIpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE): 
 		foreach(c; network){
 			//debug writefln("check %s==%s for mac: %s; rs: %s", c.name, dev, c.mac, c.name==dev);
 			if(("netmap:"~c.name)==dev){
-				debug writefln("my mac: %(%02x %), ip4: 0x%08x", c.mac, c.ip.ip);
-				myMac = c.mac;
-				myIp4 = c.ip;
+				debug writefln("my dev: %s", c);
+				myDev = c;
 				break;
 			}
 		}
@@ -134,7 +132,7 @@ class DefaultIpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE): 
 		ports_map map;
 		if(address in addresses_map){
 			map = addresses_map[address];
-		} else if (address == ZERO_IP){
+		} else if (address == ZERO_IP && ZERO_IP in addresses_map){
 			map = addresses_map[ZERO_IP];
 		} else{
 			addresses_map[address] = map;
@@ -153,49 +151,46 @@ class DefaultIpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE): 
 		assert(_payload_len<=ushort.max);
 
 		ushort payload_len = cast(ushort)_payload_len;
-		mac_type dest_mac, src_mac;
+		mac_type dest_mac = NO_MAC;
 		NetDev *cur;
 		//todo support: 0.0.0.0 as source, multicat, broadcast, ...
 		foreach(NetDev dev; network){
+			//debug writefln("dev mac: %(%02x %), dev ip: %x, %s, %s", dev.mac, dev.ip.ip, dev.is_ip_local(dest), !LocalhostNet.is_ip_local(dest));
 			if(dev.is_ip_local(dest) && !LocalhostNet.is_ip_local(dest)){
 				import std.exception;
 				import std.conv;
-				/*debug{ 
-					import std.stdio;writefln("%x %s", dest.ip, LocalhostNet.is_ip_local(dest));
-					foreach(key, val; dev.arp_table)
-						writefln("\t%x : %s", key.ip, val);
+				debug{ 
+					//import std.stdio;writefln("%x %s", dest.ip, LocalhostNet.is_ip_local(dest));
+					//foreach(key, val; dev.arp_table)
+					//	writefln("\t%x : %s", key.ip, val);
 
-				}*/
-				cur = &dev;
+				}
 				if(dest==dev.ip){
 					dest_mac = dev.mac;
-
 				}else{
 					enforce(dest in dev.arp_table, "dest not in dev.arp_table: " ~ dev.name ~" : "~to!string(dest) ~ "/" ~ to!string(dev.arp_table));
 					dest_mac = dev.arp_table[dest];
 				}
 			}
-			if(dev.ip.ip == src.ip){
-				//debug writefln("dev.ip == src");
-				src_mac = dev.mac;
-				cur = &dev;
-			}//else debug writefln("dev.ip(%x) != src(%x)", dev.ip.ip, src.ip);
+
 		}
-		if(dest_mac == NO_MAC && cur!=null){
-			dest_mac = cur.gateway_mac;
+		//debug writefln("send to def gateway: %s %s", cur, dest_mac);
+		if(dest_mac == NO_MAC){
+			dest_mac = myDev.gateway_mac;
 		}
-		if(src.ip == 0 && cur !is null){
+		/*if(src.ip == 0 && cur !is null){
 			src_mac = cur.mac;
 			src = cur.ip;
 		} else{
 			src = LocalhostNet.ip;
-		}
+		}*/
 		
 		EthernetPacket *pck = cast(EthernetPacket*)buffer.ptr;
 		
-		pck.src = src_mac;
+		pck.src = myDev.mac;
 		pck.dest = dest_mac;
 		pck.type = IP;
+		//debug writefln("%(%02x %) - %(%02x %) - %(%02x %)", dest_mac, myDev.mac, buffer[0..16]);
 		ubyte[] ip_raw = buffer[EthernetPacket.sizeof .. $];
 		Ip4Packet* ip = cast(Ip4Packet*)ip_raw;
 		static assert(Ip4Packet.sizeof==20);
@@ -207,12 +202,12 @@ class DefaultIpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE): 
 		ip.fragment_offset = htons(0x4000);
 		ip.time_to_live = 0x40;
 		ip.protocol = UDP_PROTOCOL;
-		ip.source = src.ip;
+		ip.source = myDev.ip.ip;
 		ip.dest = dest.ip;
 		ip.header_checksum = 0;
 		ip.header_checksum = htons(checksum_head_ip4(cast(ubyte*)ip, 20));
 		
-		ubyte[] udp_raw = ip_raw[Ip4Packet.sizeof .. $];
+		ubyte[] udp_raw = ip_raw[ (ip.header_length&0x0f)*4 .. $];
 		UdpIp4Packet* udp = cast(UdpIp4Packet*)udp_raw;
 		static assert(UdpIp4Packet.sizeof==8);
 		udp.dst_port = htons(dst_port);
@@ -221,27 +216,29 @@ class DefaultIpNetwork(uint UDP_RX_QUEUE_MAX_SIZE, ushort UDP_PACKET_MAX_SIZE): 
 		ubyte[] data = udp_raw[UdpIp4Packet.sizeof .. $];
 		enforce(data.length >= payload_len);
 		udp.checksum = 0;//htons(0x10);//htons(0x1bcd);//todo? UDP checksum is optional
-		return buffer[0 .. (EthernetPacket.sizeof + Ip4Packet.sizeof + UdpIp4Packet.sizeof + payload_len)];
+		auto len = (EthernetPacket.sizeof + Ip4Packet.sizeof + UdpIp4Packet.sizeof + payload_len);
+		//if(len%64!=0) len += 64 - len % 64;
+		return buffer[0 .. len];
 	}
 
 	override bool routePacket(ubyte *data, uint len){
 		EthernetPacket* ethPck = cast(EthernetPacket*)data;
-		if( (/*todo broadcast: ethPck.dest!=BROADCAST_MAC &&*/ ethPck.dest!=myMac) || ethPck.type!=IP){
+		if( (/*todo broadcast: ethPck.dest!=BROADCAST_MAC &&*/ ethPck.dest!=myDev.mac) || ethPck.type!=IP){
 			//debug if (ethPck.dest!=BROADCAST_MAC) writefln("%(%02x %)", data[0 .. 32]);
 			return false;
 		}
 		//debug writefln("eth detected: %(%02x %)", data[0 .. 32]);
 		data = data + EthernetPacket.sizeof;
 		Ip4Packet* ipPck = cast(Ip4Packet*)data;
-		if( (ipPck.ip_version&0xf0)!=0x40 || ipPck.protocol!=UDP_PROTOCOL || ipPck.dest!=myIp4.ip /*todo broadcast: */){
+		if( (ipPck.ip_version&0xf0)!=0x40 || ipPck.protocol!=UDP_PROTOCOL || ipPck.dest!=myDev.ip.ip /*todo broadcast: */){
 			//debug writefln("%x %x %x %(%02x %)", (ipPck.ip_version&0xf0), ipPck.protocol, ipPck.dest, data[0 .. 32]);
 			return false;
 		}
 		//debug writefln("ip detected: %(%02x %)", data[0 .. 32]);
-		if(myIp4 !in addresses_map){
+		if(myDev.ip !in addresses_map){
 			return false;
 		}
-		auto map = addresses_map[myIp4];
+		auto map = addresses_map[myDev.ip];
 
 		data = data + 4*(ipPck.header_length&0x0f);
 		UdpIp4Packet* udpPck = cast(UdpIp4Packet*)data;
@@ -274,17 +271,22 @@ unittest{
 	
 	dev.gateway_mac = [0,1,2,3,4,2];
 	dev.gateway_ip = parseIpDot("10.0.2.1");
-	dev.net_mask = parseIpDot("10.0.2.0"); 
+	dev.net_mask = parseIpDot("255.255.255.0"); 
+	dev.network = parseIpDot("10.0.2.0"); 
 	auto localIp = parseIpDot("10.0.2.2");
 	auto globalIp = parseIpDot("8.8.8.8");
+	assert(dev.is_ip_local(localIp));
+	assert(!dev.is_ip_local(globalIp));
 	dev.arp_table[localIp] = [0,1,2,3,4,3];
 	
-	auto net = new DefaultIpNetwork([dev]);
+	auto net = new DefaultIpNetwork!(128, 1024)([dev], "netmap:eth1");
+	net.myDev = dev;
 	ubyte[] buffer = new ubyte[2048];
 	ubyte[] payload = new ubyte[1024];
 	net.fillUdpPacket(buffer, payload.length, dev.ip, 2000, localIp, 8000);
 	assert(buffer[0 .. 6] == dev.arp_table[localIp]);
 	buffer = buffer[6 .. $];
+	writefln("%(%02x %)", buffer[0 .. 6]);
 	assert(buffer[0 .. 6] == dev.mac);
 	buffer = buffer[6 .. $];
 	assert(*(cast(ushort*)(buffer[0 .. 2].ptr)) == htons(0x0800));
@@ -294,6 +296,7 @@ unittest{
 	
 	buffer[] = 0;
 	net.fillUdpPacket(buffer, payload.length, dev.ip, 2000, globalIp, 8000);
+	debug writefln("buffer[0 .. 6] = %(%02x %); dev.gateway_mac = %(%02x %)", buffer[0 .. 6], dev.gateway_mac);
 	assert(buffer[0 .. 6] == dev.gateway_mac);
 }
 

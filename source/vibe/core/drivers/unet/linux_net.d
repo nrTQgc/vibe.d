@@ -112,6 +112,7 @@ private:
 			auto a = line.split();
 			if(a.length==0) continue;
 			auto devName = a[0];
+			auto network = a[1];
 			auto gatewayIp4 = a[2];
 			auto flags = parse!uint(a[3]);
 			auto strMask = a[7];
@@ -125,6 +126,9 @@ private:
 				devices[idx].gateway_ip = parseIpHex(gatewayIp4);
 			}else if (strMask != "00000000"){
 				devices[idx].net_mask = parseIpHex(strMask);
+			}
+			if (network != "00000000"){
+				devices[idx].network = parseIpHex(network);
 			}
 		}
 	}

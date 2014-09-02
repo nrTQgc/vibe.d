@@ -37,7 +37,7 @@
 			"libs-windows": ["wsock32", "ws2_32", "advapi32"],
 		},
 		{
-			"name": "libevent-netmap",
+			"name": "_libevent-netmap",
 			"dependencies": {"libevent": "~master"},
 			"versions": ["VibeLibeventDriver", "NetmapDriver"],
                         "platforms": ["posix"]

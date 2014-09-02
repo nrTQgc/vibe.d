@@ -104,7 +104,7 @@ auto NETMAP_IF(const netmap_if*  _base, size_t _ofs){
 auto NETMAP_TXRING(const netmap_if* nifp, size_t index){
 		return _NETMAP_OFFSET!(netmap_ring *)(nifp, *(nifp.ring_ofs.ptr + index ));
 }
-auto NETMAP_RXRING(const netmap_if *nifp, size_t index) {
+auto NETMAP_RXRING_IDX(const netmap_if *nifp, size_t index) {
 	return _NETMAP_OFFSET!(netmap_ring *)(nifp, *(nifp.ring_ofs.ptr +index + nifp.ni_tx_rings + 1 ));
 }
 auto NETMAP_RXRING(const netmap_if *nifp) {
@@ -300,13 +300,13 @@ auto NETMAP_FD(void * d){
  */
 void nm_pkt_copy(void*  _src, void *_dst, size_t l)
 {
-	uint64_t *src = cast(uint64_t*)_src;
-	uint64_t *dst = cast(uint64_t*)_dst;
+	//uint64_t *src = cast(uint64_t*)_src;
+	//uint64_t *dst = cast(uint64_t*)_dst;
 
-	if ((l >= 1024)) {
-		memcpy(dst, src, l);
+	//if ((l >= 1024)) {
+		memcpy(_dst, _src, l);
 		return;
-	}
+	/*}
 	for (; (l > 0); l-=64) {
 		*dst++ = *src++;
 		*dst++ = *src++;
@@ -316,7 +316,7 @@ void nm_pkt_copy(void*  _src, void *_dst, size_t l)
 		*dst++ = *src++;
 		*dst++ = *src++;
 		*dst++ = *src++;
-	}
+	}*/
 }
 
 
@@ -637,9 +637,12 @@ int	nm_inject(nm_desc *d, void *buf, size_t size)
 			continue;
 		}
 		i = ring.cur;
-		idx = ring.slot[i].buf_idx;
-		ring.slot[i].len = cast(ushort)size;
-		nm_pkt_copy(buf, NETMAP_BUF(ring, idx), cast(int)size);
+		idx = (ring.slot.ptr + i).buf_idx;
+		(ring.slot.ptr + i).len = cast(ushort)size;
+		auto buf2 = NETMAP_BUF(ring, idx);
+			//debug import std.stdio;
+			//debug writefln("%x %x %s", buf, buf2, cast(int)size);
+		nm_pkt_copy(buf, buf2, cast(int)size);
 		d.cur_tx_ring = cast(ushort)ri;
 		ring.head = ring.cur = nm_ring_next(ring, i);
 		return cast(uint)size;
@@ -669,7 +672,7 @@ int	nm_dispatch(nm_desc *d, int cnt, nm_cb_t cb, u_char *arg)
 		ri = d.cur_rx_ring + c;
 		if (ri > d.last_rx_ring)
 			ri = d.first_rx_ring;
-		ring = NETMAP_RXRING(d.nifp, ri);
+		ring = NETMAP_RXRING_IDX(d.nifp, ri);
 		for ( ; !nm_ring_empty(ring) && cnt != got; got++) {
 			u_int i = ring.cur;
 			u_int idx = ring.slot[i].buf_idx;
@@ -692,7 +695,7 @@ u_char * nm_nextpkt(nm_desc *d, nm_pkthdr *hdr)
 	
 	do {
 		/* compute current ring to use */
-		netmap_ring *ring = NETMAP_RXRING(d.nifp, ri);
+		netmap_ring *ring = NETMAP_RXRING_IDX(d.nifp, ri);
 		if (!nm_ring_empty(ring)) {
 			u_int i = ring.cur;
 			u_int idx = ring.slot[i].buf_idx;

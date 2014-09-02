@@ -47,7 +47,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 
 	//--------------------
 	//
-	enum dev = "netmap:eth0";
+	enum dev = "netmap:eth1";
 	enum burst = 1024;
 	//--------------------
 
@@ -188,11 +188,11 @@ version(VibeLibeventDriver) version(NetmapDriver)
 				if (ret < 0)
 					return 0;
 				if (poll_fd[0].revents & POLLERR) {
-					netmap_ring *rx = NETMAP_RXRING(pa.nifp, pa.cur_rx_ring);
+					netmap_ring *rx = NETMAP_RXRING_IDX(pa.nifp, pa.cur_rx_ring);
 					debug writefln("error on fd0, rx [%s,%s,%s)", rx.head, rx.cur, rx.tail);
 				}
 				if (poll_fd[1].revents & POLLERR) {
-					netmap_ring *rx = NETMAP_RXRING(pb.nifp, pb.cur_rx_ring);
+					netmap_ring *rx = NETMAP_RXRING_IDX(pb.nifp, pb.cur_rx_ring);
 					debug writefln("error on fd1, rx [%d,%d,%d)", rx.head, rx.cur, rx.tail);
 				}
 				if (poll_fd[0].revents & POLLOUT) {
@@ -287,17 +287,26 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		will be sent to the address specified by a call to connect().
 	    */
 		void send(in ubyte[] data, in NetworkAddress* peer_address = null){
-
+			//debug writeln("send <-");
 			auto tmp = ipNetwork.getPayloadUdp(buffer);
 			memcpy(tmp.ptr, data.ptr, data.length); 
 			auto dest = peer_address is null? cast(const(NetworkAddress*))&dest_address: peer_address;
 			ubyte[] pck = ipNetwork.fillUdpPacket(buffer, data.length, 
 			                                      src, src_port, 
 			                                      ip_v4(dest.sockAddrInet4.sin_addr.s_addr, true), dest.port);
-
-			while(send_packet(NETMAP_TXRING(pa.nifp, pa.first_tx_ring), pck)==0){
-				//yield();
+			while( nm_inject(pa, pck.ptr, pck.length)==0){
+				/*
+                 * wait for available room in the send queue(s)
+                 */
+				if (poll(&poll_fd[0], 1, 10_000) <= 0) {
+					debug writefln("poll error/timeout on queue");
+				}
+				/*if (pfd.revents & POLLERR) {
+					D("poll error");
+					goto quit;
+				}*/
 			}
+			//debug writeln("send ->");
 		}
 		
 		/** Receives a single packet.
@@ -354,7 +363,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		auto localIp = parseIpDot("10.0.2.129");
 		dev.arp_table[localIp] = [1,1,1,2,2,2];
 		
-		auto net = new DefaultIpNetwork([dev]);
+		auto net = new DefaultIpNetwork!(10, 2048)([dev], "netmap:eth0");
 		ubyte[] buffer = new ubyte[2048];
 		ubyte[] payload = new ubyte[500];
 		
@@ -380,7 +389,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		string msg = (src.req.nr_ringid & NETMAP_SW_RING) ? "host->net" : "net->host";
 		
 		while (si <= src.last_rx_ring && di <= dst.last_tx_ring) {
-			rxring = NETMAP_RXRING(src.nifp, si);
+			rxring = NETMAP_RXRING_IDX(src.nifp, si);
 			txring = NETMAP_TXRING(dst.nifp, di);
 			//ND("txring %p rxring %p", txring, rxring);
 			if (nm_ring_empty(rxring)) {
@@ -446,7 +455,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 					uint32_t pkt = ts.buf_idx;
 					ts.buf_idx = rs.buf_idx;
 					rs.buf_idx = pkt;
-					/* report the buffer change. */
+					/*report the buffer change. */
 					ts.flags |= NS_BUF_CHANGED;
 					rs.flags |= NS_BUF_CHANGED;
 				} else {
@@ -478,7 +487,7 @@ version(VibeLibeventDriver) version(NetmapDriver)
 			}
 		} else {
 			for (i = d.first_rx_ring; i <= d.last_rx_ring; i++) {
-				tot += nm_ring_space(NETMAP_RXRING(d.nifp, i));
+				tot += nm_ring_space(NETMAP_RXRING_IDX(d.nifp, i));
 			}
 		}
 		//debug writefln("p: %s; total: %s", d, tot);
@@ -486,10 +495,10 @@ version(VibeLibeventDriver) version(NetmapDriver)
 	}
 
 
-
-	//todo use batch
-	int send_packet(netmap_ring *ring, ubyte[] pkt)
+	/* t_odo use batch
+	int send_packet(netmap_ring* ring, ubyte[] pkt)
 	{
+
 		uint n = nm_ring_space(ring);
 		if (n < 1){
 			return 0;
@@ -498,13 +507,14 @@ version(VibeLibeventDriver) version(NetmapDriver)
 		netmap_slot *slot = ring.slot.ptr + cur;
 		ubyte *p = NETMAP_BUF(ring, slot.buf_idx);
 		memcpy(p, pkt.ptr, pkt.length);
-		memset(p + pkt.length, 0, 2048 - pkt.length);
+		//memset(p + pkt.length, 0, 2048 - pkt.length);
 		slot.flags |= NS_BUF_CHANGED;
 		slot.len = cast(ushort)pkt.length;
 		cur = nm_ring_next(ring, cur);
 		ring.head = ring.cur = cur;
+
 		return 1;
-	}
+	}*/
 }
 
 
