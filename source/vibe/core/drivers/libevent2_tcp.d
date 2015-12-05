@@ -58,18 +58,21 @@ package final class Libevent2TCPConnection : TCPConnection {
 		bool m_timeout_triggered;
 		TCPContext* m_ctx;
 		string m_peerAddress;
-		ubyte[64] m_peekBuffer;
+		char[64] m_peerAddressBuf;
+		ubyte[] m_peekBuffer;
 		bool m_tcpNoDelay = false;
 		bool m_tcpKeepAlive = false;
 		Duration m_readTimeout;
-		char[64] m_peerAddressBuf;
 		NetworkAddress m_localAddress, m_remoteAddress;
+		evbuffer_iovec iovec;
+		evbuffer* inbuf;
+		size_t buffpos;
+		int extent;
 	}
 
 	this(TCPContext* ctx)
 	{
 		m_ctx = ctx;
-
 		assert(!amOwner());
 
 		m_localAddress = ctx.local_addr;
@@ -83,6 +86,8 @@ package final class Libevent2TCPConnection : TCPConnection {
 
 		bufferevent_setwatermark(m_ctx.event, EV_WRITE, 4096, 65536);
 		bufferevent_setwatermark(m_ctx.event, EV_READ, 0, 65536);
+		inbuf = bufferevent_get_input(m_ctx.event);
+		//evbuffer_ptr_set(inbuf, &ev_ptr, 0, evbuffer_ptr_how.EVBUFFER_PTR_SET);
 	}
 
 	/*~this()
@@ -235,22 +240,37 @@ package final class Libevent2TCPConnection : TCPConnection {
 
 	const(ubyte)[] peek()
 	{
+		if(m_peekBuffer.length>0) return m_peekBuffer;
+		
+		if (!m_ctx || !m_ctx.event) return null;
+		acquireReader();
+		scope(exit) releaseReader();
+		
+		extent = evbuffer_peek(inbuf, -1, null/*&ev_ptr*/, &iovec, 1);
+		if (extent == 0)
+			return null;
+		m_peekBuffer = (cast(ubyte*)iovec.iov_base)[0 .. iovec.iov_len];
+		logTrace("PEEK ++++++++ %s : %s", iovec.iov_len, cast(string)m_peekBuffer);
+		return m_peekBuffer;
+			/*
+			 		if(m_peekBuffer.length>0) return m_peekBuffer;
 		if (!m_ctx || !m_ctx.event) return null;
 		acquireReader();
 		scope(exit) releaseReader();
 
 		auto inbuf = bufferevent_get_input(m_ctx.event);
-		evbuffer_iovec iovec;
-		if (evbuffer_peek(inbuf, -1, null, &iovec, 1) == 0)
+		auto rs = evbuffer_remove(inbuf, m_peekBufferMain.ptr, m_peekBufferMain.length);
+		if (rs==-1)
 			return null;
-		return (cast(ubyte*)iovec.iov_base)[0 .. iovec.iov_len];
+		return m_peekBuffer = m_peekBufferMain[0 .. rs];
+			 */
 	}
 
 	/** Reads as many bytes as 'dst' can hold.
 	*/
 	void read(ubyte[] dst)
 	{
-		checkConnected(false);
+		/*checkConnected(false);
 		acquireReader();
 		scope(exit) releaseReader();
 		while (dst.length > 0) {
@@ -264,8 +284,28 @@ package final class Libevent2TCPConnection : TCPConnection {
 
 			checkConnected(false);
 			m_ctx.core.yieldForEvent();
-		}
-		logTrace("read data");
+		}*/
+		//enforce(m_peekBuffer.length>0);
+		size_t cur;
+		logTrace("read data, %s / %s", dst.length, m_peekBuffer.length);
+		auto len = dst.length > m_peekBuffer.length? m_peekBuffer.length : dst.length;
+		dst[cur..(cur+len)] = m_peekBuffer[0..len];
+		cur += len;
+		/*while(cur<dst.length){
+			peek();
+			if(m_peekBuffer.length==0)
+			{
+				checkConnected(false);
+				m_ctx.core.yieldForEvent();
+				logTrace("wait data");
+				continue;
+			}
+			len = (dst.length-cur) > m_peekBuffer.length? m_peekBuffer.length : dst.length-cur;
+			dst[cur..(cur+len)] = m_peekBuffer[0..len];
+			cur += len;
+		}*/
+		m_peekBuffer = m_peekBuffer[len..$];
+		
 	}
 
 	bool waitForData(Duration timeout)

@@ -27,6 +27,9 @@ shared static this()
 	router.get("/", staticTemplate!"upload_form.dt");
 	router.post("/upload", &uploadFile);
 
+
+        import vibe.core.log;
+//        setLogLevel(LogLevel.trace);
 	auto settings = new HTTPServerSettings;
 	settings.port = 8080;
 	settings.bindAddresses = ["::1", "127.0.0.1"];
